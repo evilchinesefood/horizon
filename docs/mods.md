@@ -389,6 +389,20 @@ blocks and items by declaring them in `data/<id>/horizon/block/*.json` and
   "item": true }
 ```
 
+Item declarations also accept `max_damage` (1–1,000,000) and `repairable`
+(an array of at most 256 namespaced item IDs or `#item_tag` references).
+Durability implies `max_stack_size: 1`; an explicit conflicting stack size is
+rejected. Repair ingredients replace the template's repairable component;
+`[]` disables material repair (same-item anvil combination still follows vanilla rules).
+Unknown IDs/tags match no material. Omitted fields preserve template components.
+The normal anvil handles these ingredients and durability without custom tool
+logic. For example:
+
+```json
+{ "template": "minecraft:stick", "max_damage": 500,
+  "repairable": ["minecraft:iron_ingot", "#c:ingots/copper"] }
+```
+
 The fence: files go in the mod's own namespaces (`assets/<id>/`,
 `data/<id>/`, and those its manifest lists), plus additions to vanilla tags
 (`data/minecraft/tags/`) and to the convention tags NeoForge and Fabric mods

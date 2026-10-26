@@ -38,6 +38,9 @@ use {
 
 #[derive(Default)]
 pub(super) struct ModsState {
+    pub(super) tool_client: super::mod_tool_client::ToolClient,
+    #[cfg(feature = "mods")]
+    pub(super) tool_server: super::mod_tools::ToolServer,
     #[cfg(feature = "mods")]
     pub(super) mods: Mods,
     /// Capability `input`: a claimed item's use while the button is down.

@@ -559,3 +559,43 @@ world render-host {
     import render;
     import input;
 }
+
+/// Experimental server-only tool proposals. The host retains all mutation authority.
+interface tool-actions {
+    record tool-limits { max-tools: u32, max-controls: u32, max-actions: u32, max-radius: u32, max-cells: u32 }
+    /// Bounds for registrations and proposals. The host may also enforce aggregate wire and durability limits.
+    limits: func() -> tool-limits;
+    record tool-pos { x: s32, y: s32, z: s32 }
+    enum face { west, east, down, up, north, south }
+    record control { name: string, label: string, key: string }
+    record tool { item-id: string, radius: u32, max-actions: u32, controls: list<control> }
+    enum tool-event { preview, %use, control }
+    record tool-target { position: tool-pos, face: face, state: string }
+    record tool-cell { position: tool-pos, state: string, block-item: option<string>, replaceable: bool, ordinary: bool, harvest-level: u32 }
+    record material { item: string, count: u32 }
+    record tool-context {
+        event: tool-event, action: string, actor: string, dimension: string, item: string,
+        tool-data: string, damage: u32, max-damage: option<u32>, creative: bool,
+        sneaking: bool, target: option<tool-target>, cells: list<tool-cell>, materials: list<material>,
+    }
+    enum tool-action-kind { place, exchange }
+    variant placement { saved-state(string), player-facing }
+    record tool-action { kind: tool-action-kind, position: tool-pos, expected-state: string, item: string, placement: placement }
+    record tool-response { tool-data: option<string>, message: option<string>, actions: list<tool-action> }
+}
+interface tool-events {
+    use tool-actions.{tool, tool-context, tool-response};
+    /// Claim tool item IDs and declare controls once at module startup; duplicate ownership or keys are rejected.
+    register: func() -> result<list<tool>, string>;
+    /// Propose bounded actions from an authoritative actor snapshot; preview cannot mutate tool data, and the host rechecks every write.
+    action: func(context: tool-context) -> result<tool-response, string>;
+}
+world horizon-tool-mod {
+    include horizon-server-mod;
+    import tool-actions;
+    export tool-events;
+}
+world tool-host {
+    import tool-actions;
+    export tool-events;
+}

@@ -1,0 +1,9 @@
+[package]
+name = "horizon-mods-tool-guest"
+version = "0.1.0"
+edition = "2024"
+[lib]
+crate-type = ["cdylib"]
+[dependencies]
+horizon-mod-sdk = { path = "../../../horizon-mod-sdk" }
+[workspace]

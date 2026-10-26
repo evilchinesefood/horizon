@@ -235,6 +235,8 @@ struct NewItem {
     rename: Rename,
     max_stack_size: Option<u8>,
     rarity: Option<Rarity>,
+    max_damage: Option<u32>,
+    repairable: Option<Vec<String>>,
 }
 
 struct Plan<'a> {
@@ -356,6 +358,8 @@ impl<'a> Plan<'a> {
                     rename: Rename::new(item, &b.decl.id),
                     max_stack_size: None,
                     rarity: None,
+                    max_damage: None,
+                    repairable: None,
                 });
             }
         }
@@ -365,6 +369,8 @@ impl<'a> Plan<'a> {
                     rename: Rename::new(&i.template, &i.id),
                     max_stack_size: i.max_stack_size,
                     rarity: i.rarity,
+                    max_damage: i.max_damage,
+                    repairable: i.repairable.clone(),
                 });
             }
         }
@@ -468,6 +474,20 @@ impl<'a> Plan<'a> {
             if components {
                 if let Some(n) = i.max_stack_size {
                     v.set("minecraft:max_stack_size", J::Num(n.into()));
+                }
+                if let Some(damage) = i.max_damage {
+                    v.set("minecraft:max_damage", J::Num(damage.into()));
+                    v.set("minecraft:damage", J::Num(0.into()));
+                    v.set("minecraft:max_stack_size", J::Num(1.into()));
+                }
+                if let Some(ingredients) = &i.repairable {
+                    v.set(
+                        "minecraft:repairable",
+                        J::Obj(vec![(
+                            "items".into(),
+                            J::Arr(ingredients.iter().cloned().map(J::Str).collect()),
+                        )]),
+                    );
                 }
                 if let Some(r) = i.rarity {
                     let r = match r {
@@ -1337,3 +1357,60 @@ fn stamp(base: &Path, mods: &[ContentMod]) -> Result<String> {
 #[cfg(test)]
 #[path = "mod_content_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod durability_tests {
+    use super::*;
+
+    #[test]
+    fn item_components_preserve_defaults_and_override_durability_and_repair() {
+        let plan = Plan {
+            blocks: vec![],
+            items: vec![
+                NewItem {
+                    rename: Rename::new("minecraft:stick", "test:tool"),
+                    max_stack_size: Some(1),
+                    rarity: None,
+                    max_damage: Some(500),
+                    repairable: Some(vec![
+                        "minecraft:iron_ingot".into(),
+                        "#c:ingots/copper".into(),
+                    ]),
+                },
+                NewItem {
+                    rename: Rename::new("minecraft:stick", "test:unchanged"),
+                    max_stack_size: None,
+                    rarity: None,
+                    max_damage: None,
+                    repairable: None,
+                },
+                NewItem {
+                    rename: Rename::new("minecraft:stick", "test:no_repair"),
+                    max_stack_size: None,
+                    rarity: None,
+                    max_damage: None,
+                    repairable: Some(vec![]),
+                },
+            ],
+            states: 0,
+            defaults: BTreeMap::new(),
+            sounds: BTreeMap::new(),
+        };
+        let mut data: J = serde_json::from_str(r#"{"minecraft:stick":{"minecraft:max_stack_size":64,"minecraft:repairable":{"items":["minecraft:iron_ingot"]}}}"#).unwrap();
+        plan.items(&mut data, true);
+        let value: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&data).unwrap()).unwrap();
+        assert_eq!(value["test:tool"]["minecraft:max_damage"], 500);
+        assert_eq!(value["test:tool"]["minecraft:damage"], 0);
+        assert_eq!(value["test:tool"]["minecraft:max_stack_size"], 1);
+        assert_eq!(
+            value["test:tool"]["minecraft:repairable"]["items"],
+            serde_json::json!(["minecraft:iron_ingot", "#c:ingots/copper"])
+        );
+        assert_eq!(value["test:unchanged"], value["minecraft:stick"]);
+        assert_eq!(
+            value["test:no_repair"]["minecraft:repairable"]["items"],
+            serde_json::json!([])
+        );
+    }
+}

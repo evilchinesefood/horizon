@@ -79,6 +79,13 @@ pub use render_bindings::horizon::mods::render::{
 };
 use render_bindings::{RenderHost, horizon::mods::render};
 
+pub(crate) mod tool_bindings {
+    wasmtime::component::bindgen!({ path: "../horizon-mod-sdk/wit", world: "tool-host" });
+}
+use crate::tool_runtime::{Tool, ToolContext, ToolRegistration, ToolResponse};
+use tool_bindings::{ToolHost, horizon::mods::tool_actions};
+static TOOL_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
 /// A mod's linear memory cap.
 const MEMORY: usize = 64 << 20;
 /// Fuel (about one unit per WebAssembly instruction) per call: a bound on
@@ -239,6 +246,9 @@ struct Running {
     /// server mod.
     ui: Option<UiHost>,
     hooks: Hooks,
+    tool_host: Option<ToolHost>,
+    tools: Vec<Tool>,
+    tool_generation: u64,
     /// It imports `game.raycast`.
     raycasts: bool,
 }
@@ -392,6 +402,8 @@ impl Mods {
                 .map_err(|e| e.to_string())?;
             RenderHost::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
                 .map_err(|e| e.to_string())?;
+            tool_actions::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
+                .map_err(|e| e.to_string())?;
             self.engine = Some((engine, linker));
         }
         Ok(self.engine.as_ref().expect("made above"))
@@ -428,6 +440,13 @@ impl Mods {
             .filter(|r| r.hooks.server().is_some() == server)
             .flat_map(|r| r.hooks.commands().iter().cloned())
             .collect();
+        let claimed_tools = self
+            .entries
+            .iter()
+            .filter_map(|e| e.run.as_ref())
+            .flat_map(|r| r.tools.iter().map(|t| t.item_id.clone()))
+            .collect();
+        let existing_tools: Vec<_> = self.tool_registrations().map(|r| r.tool).collect();
         let snapshot = self.snapshot.clone();
         let (engine, linker) = self.engine()?;
         let component =
@@ -492,6 +511,27 @@ impl Mods {
                 .map_err(|e| reason(&e))??;
             (Hooks::Client(exports, r), ui)
         };
+        let tool_host = ToolHost::new(&mut store, &instance).ok();
+        let capability = m.capabilities.contains(&crate::Capability::ToolActions);
+        if tool_host.is_some() != capability
+            || (tool_host.is_some()
+                && (!server || !functions.iter().any(|f| f == "tool-actions.limits")))
+        {
+            return Err(
+                "tool exports require server tool-actions capability and limits import".into(),
+            );
+        }
+        let tools = if let Some(host) = &tool_host {
+            let tools = host
+                .horizon_mods_tool_events()
+                .call_register(&mut store)
+                .map_err(|e| reason(&e))??;
+            crate::tool_runtime::validate_tools(&tools, &claimed_tools)?;
+            crate::tool_runtime::validate_registry(existing_tools.iter().chain(tools.iter()))?;
+            tools
+        } else {
+            Vec::new()
+        };
         let commands = match &mut hooks {
             Hooks::Client(_, r) => &mut r.commands,
             Hooks::Server(_, r) => &mut r.commands,
@@ -508,8 +548,62 @@ impl Mods {
             store,
             ui,
             hooks,
+            tool_host,
+            tools,
+            tool_generation: TOOL_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             raycasts: functions.iter().any(|f| f == "game.raycast"),
         }))
+    }
+
+    /// Currently owned tools; stopped/failed instances never advertise controls.
+    pub fn tool_registrations(&self) -> impl Iterator<Item = ToolRegistration> + '_ {
+        self.entries
+            .iter()
+            .filter_map(|e| e.run.as_ref())
+            .flat_map(|r| {
+                r.tools.iter().map(move |tool| ToolRegistration {
+                    module_id: r.store.data().id.clone(),
+                    generation: r.tool_generation,
+                    tool: tool.clone(),
+                })
+            })
+    }
+    pub fn tool_registration(&self, item: &str) -> Option<ToolRegistration> {
+        self.tool_registrations().find(|r| r.tool.item_id == item)
+    }
+    /// Run only the claiming module. A response is a bounded proposal, not authority.
+    pub fn tool_action(
+        &mut self,
+        item: &str,
+        context: &ToolContext,
+    ) -> Option<Result<ToolResponse, String>> {
+        let i = self.entries.iter().position(|e| {
+            e.run
+                .as_ref()
+                .is_some_and(|r| r.tools.iter().any(|t| t.item_id == item))
+        })?;
+        let tool = self.entries[i]
+            .run
+            .as_ref()?
+            .tools
+            .iter()
+            .find(|t| t.item_id == item)?
+            .clone();
+        if let Err(e) = crate::tool_runtime::validate_context(&tool, context) {
+            return Some(Err(e));
+        }
+        let response = self.call(i, FUEL_EVENT, |run| {
+            run.tool_host
+                .as_ref()
+                .expect("registered tool export")
+                .horizon_mods_tool_events()
+                .call_action(&mut run.store, context)
+        });
+        Some(match response {
+            Some(Ok(r)) => crate::tool_runtime::validate_response(&tool, context, &r).map(|()| r),
+            Some(Err(e)) => Err(e.chars().take(1024).collect()),
+            None => Err("tool module stopped during action".into()),
+        })
     }
 
     /// True when at least one mod runs: the game skips its mod work otherwise.
@@ -1518,4 +1612,10 @@ fn storage_key_ok(key: &str) -> bool {
             .bytes()
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"_.-".contains(&b));
     chars_ok && key != "." && key != ".."
+}
+
+impl tool_actions::Host for State {
+    fn limits(&mut self) -> tool_actions::ToolLimits {
+        crate::tool_runtime::tool_limits()
+    }
 }

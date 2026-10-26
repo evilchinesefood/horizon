@@ -48,6 +48,21 @@ pub fn check_path(name: &str) -> Result<(), String> {
 }
 
 /// A vanilla identifier, `minecraft:path`.
+fn repair_id(id: &str) -> bool {
+    let id = id.strip_prefix('#').unwrap_or(id);
+    let Some((namespace, path)) = id.split_once(':') else {
+        return false;
+    };
+    !namespace.is_empty()
+        && !path.is_empty()
+        && namespace
+            .bytes()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || b"_.-".contains(&c))
+        && path
+            .bytes()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || b"_./-".contains(&c))
+}
+
 fn vanilla_id(id: &str) -> bool {
     id.strip_prefix("minecraft:").is_some_and(|path| {
         !path.is_empty()
@@ -116,6 +131,8 @@ struct ItemFile {
     template: String,
     max_stack_size: Option<u8>,
     rarity: Option<Rarity>,
+    max_damage: Option<u32>,
+    repairable: Option<Vec<String>>,
 }
 
 /// An item the mod adds: a vanilla template item's components under a new
@@ -127,6 +144,10 @@ pub struct Item {
     pub template: String,
     pub max_stack_size: Option<u8>,
     pub rarity: Option<Rarity>,
+    /// Positive durability, at most one million; implies a stack size of one.
+    pub max_damage: Option<u32>,
+    /// Replacement repair ingredients: item IDs or #item tags; empty disables repair.
+    pub repairable: Option<Vec<String>>,
 }
 
 #[derive(Debug)]
@@ -344,14 +365,33 @@ impl Content {
             if file.max_stack_size.is_some_and(|n| !(1..=99).contains(&n)) {
                 return Err(format!("{name}: max_stack_size is 1 to 99"));
             }
+            if let Some(damage) = file.max_damage {
+                if !(1..=1_000_000).contains(&damage) {
+                    return Err(format!("{name}: max_damage is 1 to 1000000"));
+                }
+                if file.max_stack_size.is_some_and(|size| size != 1) {
+                    return Err(format!(
+                        "{name}: damageable items must have max_stack_size 1"
+                    ));
+                }
+            }
+            if let Some(ingredients) = &file.repairable
+                && (ingredients.len() > 256 || ingredients.iter().any(|id| !repair_id(id)))
+            {
+                return Err(format!(
+                    "{name}: repairable requires at most 256 valid item IDs or #tags"
+                ));
+            }
             if !ids.insert(item.clone()) {
                 return Err(format!("{name}: {item} is also a block's item"));
             }
             self.items.push(Item {
                 id: item,
                 template: file.template,
-                max_stack_size: file.max_stack_size,
+                max_stack_size: file.max_damage.map(|_| 1).or(file.max_stack_size),
                 rarity: file.rarity,
+                max_damage: file.max_damage,
+                repairable: file.repairable,
             });
         }
         Ok(())
@@ -482,6 +522,37 @@ capabilities = ["registries"]
         );
         assert_eq!(content.items[0].id, "ruby:ruby");
         assert_eq!(content.items[0].rarity, Some(Rarity::Uncommon));
+    }
+
+    #[test]
+    fn durability_and_repair_declarations() {
+        let content = hmod("durability", MANIFEST_TEXT, &[("data/ruby/horizon/item/tool.json",
+            br##"{"template":"minecraft:stick","max_damage":1562,"repairable":["minecraft:diamond","#c:gems/ruby"]}"##)]).unwrap();
+        let item = &content.items[0];
+        assert_eq!(item.max_damage, Some(1562));
+        assert_eq!(item.max_stack_size, Some(1));
+        assert_eq!(item.repairable.as_ref().unwrap().len(), 2);
+        for (i, fields) in [
+            r#""max_damage":0"#,
+            r#""max_damage":1000001"#,
+            r#""max_damage":10,"max_stack_size":2"#,
+            r#""repairable":["Bad:id"]"#,
+            r#""repairable":["minecraft:"]"#,
+            r#""repairable":["stone"]"#,
+        ]
+        .iter()
+        .enumerate()
+        {
+            let json = format!("{{\"template\":\"minecraft:stick\",{fields}}}");
+            assert!(
+                hmod(
+                    &format!("bad-durability-{i}"),
+                    MANIFEST_TEXT,
+                    &[("data/ruby/horizon/item/tool.json", json.as_bytes())]
+                )
+                .is_err()
+            );
+        }
     }
 
     #[test]

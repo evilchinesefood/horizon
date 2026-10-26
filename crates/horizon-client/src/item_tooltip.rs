@@ -184,7 +184,10 @@ fn is_potion_item(item: &str) -> bool {
 /// The name line of `stack`, as the item's translation or, for potions and
 /// smithing templates, its name component gives it.
 pub fn name_line(stack: &ItemStack, translate: &dyn Fn(&str) -> Option<String>) -> String {
-    let path = stack.item.trim_start_matches("minecraft:");
+    let (namespace, path) = stack
+        .item
+        .split_once(':')
+        .unwrap_or(("minecraft", &stack.item));
     if let Some(name) = stack.custom_name() {
         return name.to_owned();
     }
@@ -195,7 +198,9 @@ pub fn name_line(stack: &ItemStack, translate: &dyn Fn(&str) -> Option<String>) 
         return translate("block.minecraft.ominous_banner")
             .unwrap_or_else(|| "Ominous Banner".to_owned());
     }
-    let key = if is_potion_item(&stack.item) {
+    let key = if namespace != "minecraft" {
+        None
+    } else if is_potion_item(&stack.item) {
         Some(crate::brewing::potion_name_key(&stack.item, stack.potion()))
     } else if let Some(pattern) = path.strip_suffix("_armor_trim_smithing_template") {
         Some(format!("trim_pattern.minecraft.{pattern}"))
@@ -208,8 +213,8 @@ pub fn name_line(stack: &ItemStack, translate: &dyn Fn(&str) -> Option<String>) 
         None
     };
     key.and_then(|k| translate(&k))
-        .or_else(|| translate(&format!("item.minecraft.{path}")))
-        .or_else(|| translate(&format!("block.minecraft.{path}")))
+        .or_else(|| translate(&format!("item.{namespace}.{path}")))
+        .or_else(|| translate(&format!("block.{namespace}.{path}")))
         .unwrap_or_else(|| path.replace('_', " "))
 }
 
@@ -521,6 +526,23 @@ pub fn lore_texts(stack: &ItemStack) -> Vec<crate::text::Text> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mod_item_and_block_names_use_their_namespace() {
+        let translate = |key: &str| match key {
+            "item.example.wand" => Some("Building Wand".into()),
+            "block.example.rock" => Some("Example Rock".into()),
+            _ => None,
+        };
+        assert_eq!(
+            name_line(&ItemStack::new("example:wand", 1), &translate),
+            "Building Wand"
+        );
+        assert_eq!(
+            name_line(&ItemStack::new("example:rock", 1), &translate),
+            "Example Rock"
+        );
+    }
 
     #[test]
     fn lore_keeps_component_colours_under_dark_purple_italic() {

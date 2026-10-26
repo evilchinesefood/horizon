@@ -97,9 +97,10 @@ pub enum Capability {
     Input,
     /// The players on the server and messages to them (server mods).
     Players,
+    ToolActions,
 }
 impl Capability {
-    pub const ALL: [Capability; 10] = [
+    pub const ALL: [Capability; 11] = [
         Capability::GameRead,
         Capability::Chat,
         Capability::Hud,
@@ -110,10 +111,17 @@ impl Capability {
         Capability::Render,
         Capability::Input,
         Capability::Players,
+        Capability::ToolActions,
     ];
     /// Whether a server mod may have it: the others act on a local player.
     pub fn on_server(self) -> bool {
-        matches!(self, Capability::Storage | Capability::Players)
+        matches!(
+            self,
+            Capability::Storage
+                | Capability::Registries
+                | Capability::Players
+                | Capability::ToolActions
+        )
     }
     /// The WIT interface it grants, in `horizon:mods`.
     pub fn interface(self) -> &'static str {
@@ -128,6 +136,7 @@ impl Capability {
             Capability::Render => "render",
             Capability::Input => "input",
             Capability::Players => "players",
+            Capability::ToolActions => "tool-actions",
         }
     }
     /// May change in any release: a mod uses it only with
@@ -135,7 +144,7 @@ impl Capability {
     pub fn is_experimental(self) -> bool {
         matches!(
             self,
-            Capability::Ui | Capability::Render | Capability::Input
+            Capability::Ui | Capability::Render | Capability::Input | Capability::ToolActions
         )
     }
     /// What the player reads before turning the mod on: "May <this>".
@@ -153,6 +162,7 @@ impl Capability {
                 "see the keys you hold and your clicks, take over the use button on its own items and the mouse wheel, and add keys"
             }
             Capability::Players => "see who is on the server and message them",
+            Capability::ToolActions => "propose building actions with held tools",
         }
     }
     /// The capability a component import needs, `Ok(None)` for one every
@@ -188,6 +198,7 @@ impl fmt::Display for Capability {
             Capability::Render => "render",
             Capability::Input => "input",
             Capability::Players => "players",
+            Capability::ToolActions => "tool-actions",
         };
         f.write_str(name)
     }
@@ -224,11 +235,9 @@ impl Manifest {
                 "{MANIFEST}: a server mod is side = \"server\" with api = \"{SERVER_API}\", and only it"
             ));
         }
-        if let Some(c) = m
-            .capabilities
-            .iter()
-            .find(|c| c.on_server() != server && **c != Capability::Storage)
-        {
+        if let Some(c) = m.capabilities.iter().find(|c| {
+            c.on_server() != server && !matches!(c, Capability::Storage | Capability::Registries)
+        }) {
             let side = if server { "client" } else { "server" };
             return Err(format!("{MANIFEST}: capability {c} is for {side} mods"));
         }
@@ -517,6 +526,23 @@ capabilities = ["game-read", "hud"]
         assert_eq!(p.manifest.id, "coords_hud");
         assert_eq!(p.wasm.as_deref(), Some(&b"\0asm"[..]));
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn tool_actions_require_server_side_and_experimental_opt_in() {
+        let base = "id=\"tools\"\nname=\"Tools\"\nversion=\"1\"\napi=\"0.3\"\nside=\"server\"\ncapabilities=[\"tool-actions\"]\n";
+        assert!(Manifest::parse(base).unwrap_err().contains("experimental"));
+        let good = format!("{base}experimental=[\"tool-actions\"]\n");
+        Manifest::parse(&good)
+            .unwrap()
+            .check_imports(["horizon:mods/tool-actions@0.1.0"])
+            .unwrap();
+        let client = good.replace("0.3", "0.1").replace("server", "client");
+        assert!(
+            Manifest::parse(&client)
+                .unwrap_err()
+                .contains("for server mods")
+        );
     }
 
     #[test]

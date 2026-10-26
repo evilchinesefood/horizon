@@ -202,7 +202,7 @@ fn undeclared_capabilities_are_refused() {
 /// from the functions they import.
 #[test]
 fn a_mod_for_a_newer_horizon_is_refused() {
-    use horizon_mods::api_level::{LEVEL, imports, needed};
+    use horizon_mods::api_level::{imports, needed};
     use wit_parser::{ManglingAndAbi, Resolve};
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let wit = std::fs::read_to_string(root.join("crates/horizon-mod-sdk/wit/horizon.wit"))
@@ -252,8 +252,11 @@ experimental = ["ui", "render", "input"]
         needed(imports(&wasm).unwrap().iter().map(String::as_str)).0
     };
     assert_eq!(level("coords_hud.hmod"), 0);
-    // The UI guest shows a minimap (`render.set-minimap`).
-    assert_eq!(level("horizon_mods_test_ui_guest.hmod"), LEVEL);
+    // The UI guest imports quiet commands; unrelated new tool APIs do not raise its minimum.
+    assert_eq!(
+        level("horizon_mods_test_ui_guest.hmod"),
+        needed(["command.run-quiet"].into_iter()).0
+    );
 }
 
 #[test]
@@ -974,6 +977,11 @@ fn a_server_mod_runs_only_where_the_world_does() {
 
     let mut mods = Mods::load_for(Runs::Server, paths, |_| true, |c| c == "give");
     assert!(mods.runs_server());
+    assert_eq!(
+        mods.tool_registrations().count(),
+        0,
+        "legacy server exports need no tool interface"
+    );
     assert_eq!(
         mods.server_commands().collect::<Vec<_>>(),
         ["online", "mined"]

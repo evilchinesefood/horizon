@@ -17,6 +17,7 @@ The contract between Horizon and its mods: the WIT package `horizon:mods@0.1.0`,
 | `render` | [`render`](#render) | draw on your screen, shake and zoom the camera |
 | `input` | [`input`](#input) | see the keys you hold and your clicks, take over the use button on its own items and the mouse wheel, and add keys |
 | `players` | [`players`](#players) | see who is on the server and message them |
+| `tool-actions` | [`tool-actions`](#tool-actions) | propose building actions with held tools |
 
 ## World `horizon-mod`
 
@@ -52,6 +53,16 @@ The game's side of capability `render` (imports only).
 
 - Imports (what the game offers): `render`, `input`
 - Exports (what the mod provides): 
+
+## World `horizon-tool-mod`
+
+- Imports (what the game offers): `tool-actions`, `log`, `storage`, `players`
+- Exports (what the mod provides): `tool-events`, `server-events`
+
+## World `tool-host`
+
+- Imports (what the game offers): `tool-actions`
+- Exports (what the mod provides): `tool-events`
 
 ## `log`
 
@@ -533,3 +544,164 @@ What the server calls in a server mod (manifest `api = "0.3"`, experimental). On
 | `command` | `func(player: player, name: string, args: string) -> result<option<string>, string>` | `/name args` typed by `player`: ok(some(text)) is their feedback, err(text) their error in red. |
 | `block-broken` | `func(player: player, pos: block-pos, state: string)` | A player broke the block at `pos` in their dimension: `state` is what was there, as `minecraft:oak_log[axis=y]`. |
 | `block-placed` | `func(player: player, pos: block-pos, state: string)` | A player placed `state` at `pos` in their dimension. |
+
+## `tool-actions`
+
+Access: capability `tool-actions`.
+
+Experimental server-only tool proposals. The host retains all mutation authority.
+
+### record `tool-limits`
+
+| Field | Type | |
+| --- | --- | --- |
+| `max-tools` | `u32` |  |
+| `max-controls` | `u32` |  |
+| `max-actions` | `u32` |  |
+| `max-radius` | `u32` |  |
+| `max-cells` | `u32` |  |
+
+### record `tool-pos`
+
+| Field | Type | |
+| --- | --- | --- |
+| `x` | `s32` |  |
+| `y` | `s32` |  |
+| `z` | `s32` |  |
+
+### enum `face`
+
+| Case | |
+| --- | --- |
+| `west` |  |
+| `east` |  |
+| `down` |  |
+| `up` |  |
+| `north` |  |
+| `south` |  |
+
+### record `control`
+
+| Field | Type | |
+| --- | --- | --- |
+| `name` | `string` |  |
+| `label` | `string` |  |
+| `key` | `string` |  |
+
+### record `tool`
+
+| Field | Type | |
+| --- | --- | --- |
+| `item-id` | `string` |  |
+| `radius` | `u32` |  |
+| `max-actions` | `u32` |  |
+| `controls` | `list<control>` |  |
+
+### enum `tool-event`
+
+| Case | |
+| --- | --- |
+| `preview` |  |
+| `use` |  |
+| `control` |  |
+
+### record `tool-target`
+
+| Field | Type | |
+| --- | --- | --- |
+| `position` | `tool-pos` |  |
+| `face` | `face` |  |
+| `state` | `string` |  |
+
+### record `tool-cell`
+
+| Field | Type | |
+| --- | --- | --- |
+| `position` | `tool-pos` |  |
+| `state` | `string` |  |
+| `block-item` | `option<string>` |  |
+| `replaceable` | `bool` |  |
+| `ordinary` | `bool` |  |
+| `harvest-level` | `u32` |  |
+
+### record `material`
+
+| Field | Type | |
+| --- | --- | --- |
+| `item` | `string` |  |
+| `count` | `u32` |  |
+
+### record `tool-context`
+
+| Field | Type | |
+| --- | --- | --- |
+| `event` | `tool-event` |  |
+| `action` | `string` |  |
+| `actor` | `string` |  |
+| `dimension` | `string` |  |
+| `item` | `string` |  |
+| `tool-data` | `string` |  |
+| `damage` | `u32` |  |
+| `max-damage` | `option<u32>` |  |
+| `creative` | `bool` |  |
+| `sneaking` | `bool` |  |
+| `target` | `option<tool-target>` |  |
+| `cells` | `list<tool-cell>` |  |
+| `materials` | `list<material>` |  |
+
+### enum `tool-action-kind`
+
+| Case | |
+| --- | --- |
+| `place` |  |
+| `exchange` |  |
+
+### variant `placement`
+
+| Case | Payload | |
+| --- | --- | --- |
+| `saved-state` | `string` |  |
+| `player-facing` |  |  |
+
+### record `tool-action`
+
+| Field | Type | |
+| --- | --- | --- |
+| `kind` | `tool-action-kind` |  |
+| `position` | `tool-pos` |  |
+| `expected-state` | `string` |  |
+| `item` | `string` |  |
+| `placement` | `placement` |  |
+
+### record `tool-response`
+
+| Field | Type | |
+| --- | --- | --- |
+| `tool-data` | `option<string>` |  |
+| `message` | `option<string>` |  |
+| `actions` | `list<tool-action>` |  |
+
+| Function | Signature | What it does |
+| --- | --- | --- |
+| `limits` | `func() -> tool-limits` | Bounds for registrations and proposals. The host may also enforce aggregate wire and durability limits. |
+
+## `tool-events`
+
+Access: exported by the mod: the game calls it.
+
+### type `tool`
+
+`type tool = tool`
+
+### type `tool-context`
+
+`type tool-context = tool-context`
+
+### type `tool-response`
+
+`type tool-response = tool-response`
+
+| Function | Signature | What it does |
+| --- | --- | --- |
+| `register` | `func() -> result<list<tool>, string>` | Claim tool item IDs and declare controls once at module startup; duplicate ownership or keys are rejected. |
+| `action` | `func(context: tool-context) -> result<tool-response, string>` | Propose bounded actions from an authoritative actor snapshot; preview cannot mutate tool data, and the host rechecks every write. |

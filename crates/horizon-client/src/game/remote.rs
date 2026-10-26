@@ -498,6 +498,7 @@ impl Game<'_> {
 
     /// Disconnect and return to the multiplayer screen (DisconnectedScreen).
     pub(super) fn leave_server(&mut self, reason: Option<String>) -> Result<()> {
+        self.mods.tool_client.clear();
         if reason.is_none() && self.integrated.as_ref().is_some_and(|s| !s.stopped()) {
             return self.begin_closing_save(false);
         }
@@ -1613,6 +1614,9 @@ impl Game<'_> {
         match packet {
             // ClientCommonPacketListenerImpl.handlePing runs on the game
             // thread, after all preceding packets (especially teleports).
+            C::CustomPayload(p) if p.channel == horizon_client::tool_channel::CHANNEL => {
+                self.receive_tool_message(&p.data)
+            }
             C::Ping(p) => self.send(S::Pong(p)),
             // PingDebugMonitor.onPongReceived.
             C::PongResponse(p) => {
@@ -1620,6 +1624,7 @@ impl Game<'_> {
                 self.debug_charts.ping.log(delay);
             }
             C::Login(p) => {
+                self.mods.tool_client.clear();
                 self.level.hardcore = p.hardcore;
                 if let Some(r) = self.remote.as_mut() {
                     r.online_mode = p.online_mode;
@@ -4062,6 +4067,13 @@ impl Game<'_> {
             if let Some(r) = self.remote.as_mut() {
                 r.use_target = Some(hit.pos);
             }
+            if held
+                .as_ref()
+                .is_some_and(|s| self.mods.tool_client.claims_item(&s.item))
+            {
+                self.with_hand(hand, Game::swing_arm);
+                return true;
+            }
             if reacts {
                 self.predict_use(&changes, seq);
             } else if let Some(stack) = held.as_ref()
@@ -5364,7 +5376,7 @@ pub(super) fn input_ordinal(input: Input) -> i32 {
 
 /// The client's world for a guess at what a click does: reads go to the
 /// world, writes stay here and are dropped.
-struct DryLevel<'w> {
+pub(super) struct DryLevel<'w> {
     base: &'w dyn horizon_world::level::LevelAccess,
     changed: HashMap<horizon_core::position::BlockPos, BlockStateId>,
     random: horizon_core::random::LegacyRandom,
@@ -5397,7 +5409,7 @@ pub(super) fn hand_operated(name: &str) -> bool {
 }
 
 impl<'w> DryLevel<'w> {
-    fn new(base: &'w dyn horizon_world::level::LevelAccess) -> Self {
+    pub(super) fn new(base: &'w dyn horizon_world::level::LevelAccess) -> Self {
         Self {
             base,
             changed: HashMap::new(),

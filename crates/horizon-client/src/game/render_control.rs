@@ -18,7 +18,7 @@ pub const HELP: &[&str] = &[
 
 impl Game<'_> {
     /// Parse `name[k=v,...]` into a registry state (defaults for missing properties).
-    fn parse_state(&self, text: &str) -> Result<BlockStateId> {
+    pub(super) fn parse_state(&self, text: &str) -> Result<BlockStateId> {
         let (name, props) = match text.split_once('[') {
             Some((n, rest)) => (n, rest.trim_end_matches(']')),
             None => (text, ""),

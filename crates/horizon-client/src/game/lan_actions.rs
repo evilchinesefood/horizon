@@ -1250,6 +1250,9 @@ impl Game<'_> {
                 self.guest_carried_back(host, gi);
             }
             S::ChatCommand(c) => self.guest_chat_command(host, conn, &c.command),
+            S::CustomPayload(p) if p.channel == horizon_client::tool_channel::CHANNEL => {
+                self.guest_tool_control(host, conn, &p.data);
+            }
             S::CustomPayload(p) if p.channel == horizon_protocol::quiet::CHANNEL => {
                 self.guest_quiet_commands(host, conn, &p.data)
             }
@@ -1961,6 +1964,9 @@ impl Game<'_> {
                     play.digging = None;
                 }
             }
+            self.as_guest(host, conn, |g| {
+                g.with_hand(Hand::Main, Game::tick_tool_preview)
+            });
             // Player.tick: a different main-hand item resets the attack
             // strength, and detectEquipmentUpdates gives the guest its modifiers.
             let g = &host.hub.guests[gi];

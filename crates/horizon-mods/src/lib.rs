@@ -20,3 +20,8 @@ pub use content::Content;
 pub use manifest::{Capability, Manifest, Package, Side, find};
 #[cfg(feature = "runtime")]
 pub use runtime::*;
+
+#[cfg(feature = "runtime")]
+mod tool_runtime;
+#[cfg(feature = "runtime")]
+pub use tool_runtime::*;

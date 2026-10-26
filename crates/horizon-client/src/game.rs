@@ -104,6 +104,8 @@ mod mob_blocks;
 mod mob_gear;
 mod mod_input;
 mod mod_render;
+mod mod_tool_client;
+mod mod_tools;
 mod mods;
 mod mount_menu;
 mod mounts;
@@ -3670,6 +3672,9 @@ impl Game<'_> {
     /// One hand's turn in `startUseItem`: `useItemOn` the block aimed at,
     /// then `useItem`. Whether the click ends here (it acted or failed).
     fn use_hand(&mut self, block_hit: Option<&Hit>) -> Result<bool> {
+        if self.use_mod_tool(block_hit)? {
+            return Ok(true);
+        }
         // isSecondaryUseActive with something in either hand keeps blocks
         // from reacting.
         let sneaking = self.keys.contains(&KeyCode::ShiftLeft);
@@ -5253,6 +5258,7 @@ impl Game<'_> {
             self.draw_boss_bars(&mut batch);
             self.draw_extras(&mut batch);
             self.draw_mod_shapes(&mut batch);
+            self.draw_tool_hud(&mut batch);
         }
         if show_hud {
             // Hud.nextContextualInfoState: the jump bar, the experience bar or
@@ -8514,6 +8520,11 @@ impl Game<'_> {
         Ok(())
     }
     fn close_world(&mut self) -> Result<()> {
+        self.mods.tool_client.clear();
+        #[cfg(feature = "mods")]
+        {
+            self.mods.tool_server = Default::default();
+        }
         self.clear_waypoints();
         self.begin_closing_save(false)
     }
@@ -10712,6 +10723,7 @@ impl Game<'_> {
         // FishingHookRenderer's line, then DebugRenderer: chunk borders and
         // hitboxes (F3+G, F3+B).
         let mut lines = self.fishing_line(alpha, size);
+        lines.extend(self.tool_preview_lines());
         let mut on_top = Vec::new();
         if self.show_hitboxes || self.show_chunk_borders {
             let g = self.debug_gizmos(alpha as f32);
@@ -11117,6 +11129,9 @@ impl Game<'_> {
             return Ok(());
         }
         if self.screen == Screen::Mod && self.mod_screen_key(key) {
+            return Ok(());
+        }
+        if self.tool_key(key) {
             return Ok(());
         }
         if self.sort_key_press(key) {

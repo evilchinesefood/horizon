@@ -134,6 +134,9 @@ mod run {
 
         /// The tick's end: joins and leaves, the tick's events, the tick hook.
         pub(in crate::game) fn tick_server_mods(&mut self) {
+            if self.remote.is_none() && self.options.execution_role.is_client() {
+                self.with_hand(super::super::Hand::Main, Game::tick_tool_preview);
+            }
             if !self.options.execution_role.is_client() {
                 // A server has no frames to check its dev mods in.
                 self.reload_dev_mods();
