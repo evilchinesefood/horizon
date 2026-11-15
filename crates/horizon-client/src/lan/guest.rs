@@ -98,6 +98,7 @@ pub struct Guest {
     /// The last `ServerboundPlayerInputPacket` flags (forward 1, backward 2,
     /// left 4, right 8, jump 16, shift 32, sprint 64).
     pub input: u8,
+    pub elevator_activation: Option<crate::elevator::Activation>,
     /// The boat or minecart the player rides (`Entity.getVehicle`).
     pub vehicle: Option<u32>,
     /// `ServerGamePacketListenerImpl.lastGoodX/Y/Z` of the vehicle it controls.
@@ -286,6 +287,7 @@ impl Guest {
             permission: 0,
             sneaking: false,
             input: 0,
+            elevator_activation: None,
             vehicle: None,
             vehicle_good: None,
             sprinting: false,
@@ -529,6 +531,32 @@ fn network_stack(
         ));
     }
     if let Some(d) = s.data() {
+        if let Some(display) = d.other("minecraft:tooltip_display") {
+            use horizon_world::nbt::Tag;
+            let hide = matches!(display.get("hide_tooltip"), Some(Tag::Byte(value)) if *value != 0);
+            let hidden = match display.get("hidden_components") {
+                Some(Tag::List(values)) => values
+                    .iter()
+                    .filter_map(|value| {
+                        let Tag::String(name) = value else {
+                            return None;
+                        };
+                        synced_id("minecraft:data_component_type", &name.to_string().ok()?)
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            };
+            stack.added.push((
+                horizon_protocol::item::component::TOOLTIP_DISPLAY,
+                horizon_protocol::item::Component::TooltipDisplay { hide, hidden },
+            ));
+        }
+        if let Some(custom) = d.other("minecraft:custom_data") {
+            stack.added.push((
+                horizon_protocol::item::component::CUSTOM_DATA,
+                horizon_protocol::item::Component::Nbt(custom.clone()),
+            ));
+        }
         if let Some(rgb) = d.dyed_color {
             stack.added.push((
                 horizon_protocol::item::component::DYED_COLOR,

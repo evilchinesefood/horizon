@@ -233,6 +233,29 @@ impl VanillaTerrain {
         let worker = worker.get_or_insert_with(|| self.generator.worker());
         worker.structure_starts(ChunkPos::new(x, z))
     }
+    pub fn compass_catalog(&self, structures: bool) -> Vec<String> {
+        self.generator.compass_catalog(structures)
+    }
+    pub fn compass_search(
+        &self,
+        structures: bool,
+        name: &str,
+        origin: [i32; 3],
+    ) -> Option<(String, [i32; 3])> {
+        let mut worker = self.generator.worker();
+        if structures {
+            return worker.locate(&[name.to_owned()], origin, 100);
+        }
+        worker.find_closest_biome(&horizon_world::worldgen::generator::BiomeSearch {
+            allowed: &|candidate| candidate == name,
+            origin,
+            radius: 6400,
+            horizontal: 32,
+            vertical: 64,
+            min_y: crate::chunk::MIN_Y,
+            max_y: crate::chunk::MIN_Y + crate::chunk::HEIGHT - 1,
+        })
+    }
     /// `/locate structure`: the nearest start of one of `names` within
     /// `radius` placement sectors of block `from`.
     pub fn locate(

@@ -254,6 +254,12 @@ impl World {
         }
         let previous = Arc::make_mut(chunk).set(x & 15, y, z & 15, state.0);
         if previous != state.0 {
+            if matches!(
+                self.block_entities.get(&(x, y, z)),
+                Some(crate::containers::BlockEntity::Elevator(_))
+            ) {
+                self.block_entities.remove(&(x, y, z));
+            }
             self.block_entities
                 .state_changed((x, y, z), previous, state.0);
             let watches = |id: u32| self.watched.get(id as usize).copied().unwrap_or(false);

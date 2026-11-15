@@ -54,6 +54,7 @@ pub const HOPPER_SLOTS: usize = 5;
 
 #[derive(Clone, Debug)]
 pub enum BlockEntity {
+    Elevator(crate::elevator_options::ElevatorBlock),
     Chest(Vec<Option<ItemStack>>),
     Furnace(Furnace),
     Brewing(Box<crate::brewing::BrewingStand>),
@@ -179,6 +180,9 @@ pub struct Jukebox {
 }
 impl BlockEntity {
     pub fn for_block(name: &str) -> Option<Self> {
+        if crate::elevator_options::is_elevator(name) {
+            return Some(Self::Elevator(Default::default()));
+        }
         if let Some(hanging) = crate::signs::sign_kind(name) {
             return Some(Self::Sign(crate::signs::SignData {
                 hanging,
@@ -259,6 +263,7 @@ impl BlockEntity {
     }
     pub fn id(&self) -> &'static str {
         match self {
+            Self::Elevator(_) => "horizon:elevator",
             Self::Chest(items) => match items.len() {
                 HOPPER_SLOTS => "minecraft:hopper",
                 9 => "minecraft:dispenser",
@@ -290,7 +295,7 @@ impl BlockEntity {
             Self::Chest(items) => items.iter().flatten().cloned().collect(),
             Self::Furnace(f) => f.items.iter().flatten().cloned().collect(),
             Self::Brewing(b) => b.items.iter().flatten().cloned().collect(),
-            Self::Sign(_) => Vec::new(),
+            Self::Sign(_) | Self::Elevator(_) => Vec::new(),
             Self::Jukebox(j) => j.record.iter().cloned().collect(),
             Self::Beacon(_)
             | Self::CreakingHeart(_)
@@ -310,7 +315,8 @@ impl BlockEntity {
             Self::Chest(items) => items,
             Self::Furnace(f) => &f.items,
             Self::Brewing(b) => &b.items,
-            Self::Sign(_)
+            Self::Elevator(_)
+            | Self::Sign(_)
             | Self::Jukebox(_)
             | Self::Beacon(_)
             | Self::Lectern(_)
@@ -330,7 +336,8 @@ impl BlockEntity {
             Self::Chest(items) => items,
             Self::Furnace(f) => &mut f.items,
             Self::Brewing(b) => &mut b.items,
-            Self::Sign(_)
+            Self::Elevator(_)
+            | Self::Sign(_)
             | Self::Jukebox(_)
             | Self::Beacon(_)
             | Self::Lectern(_)

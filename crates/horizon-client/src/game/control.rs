@@ -540,6 +540,16 @@ impl Game<'_> {
                     .unwrap_or("")
                     .strip_prefix(' ')
                     .unwrap_or("");
+                if self.compass_picker.is_some() {
+                    let (text, replace) = match text.strip_prefix("--replace") {
+                        Some(rest) if rest.is_empty() || rest.starts_with(' ') => {
+                            (rest.strip_prefix(' ').unwrap_or(rest), true)
+                        }
+                        _ => (text, false),
+                    };
+                    self.compass_type(text, replace);
+                    return ok();
+                }
                 if self.book.is_some() {
                     self.book_type(text);
                     return ok();
@@ -994,6 +1004,11 @@ impl Game<'_> {
         status["pending_uploads"] = self.pending_uploads.len().into();
         status["destroying"] = json!(destroying);
         status["physical_keys"] = json!(physical_keys);
+        status["ore_excavation"] = json!({
+            "held": self.ore_excavation.held,
+            "remaining": self.ore_excavation.remaining(),
+            "removed": self.ore_excavation.removed,
+        });
         status["heard"] = json!(self.audio.heard);
         status["stopped_sounds"] = json!(self.audio.stopped);
         // Boats, minecarts, armor stands, item frames and paintings.

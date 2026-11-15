@@ -32,6 +32,7 @@ fn attack_range_contains(range: &serde_json::Value, distance: f64, creative: boo
 impl Game<'_> {
     /// Opening a screen stops breaking before the next game tick (which may pause).
     pub(super) fn stop_mining(&mut self) {
+        self.ore_release();
         let mut destroying = std::mem::take(&mut self.clicks.destroying);
         destroying.stop(&mut GameHands {
             game: self,

@@ -1628,6 +1628,7 @@ trait SeededPipeline: Send + Sync {
         worker: &mut WorkerState,
         region: &mut [ProtoChunk; 9],
     ) -> Result<DecorateStats, GeneratorError>;
+    fn compass_catalog(&self, structures: bool) -> Vec<String>;
     fn data(&self) -> &Arc<GeneratorData>;
     fn sea_level(&self) -> i32;
     fn surface_sample(
@@ -1715,6 +1716,27 @@ where
             }
             None => Err(resource("decoration resources were not loaded")),
         }
+    }
+    fn compass_catalog(&self, structures: bool) -> Vec<String> {
+        let possible = self.source.possible_biomes();
+        if !structures {
+            return possible.into_iter().map(str::to_owned).collect();
+        }
+        let ids: BTreeSet<_> = possible
+            .iter()
+            .filter_map(|name| self.data.biome_id(name))
+            .collect();
+        self.structures
+            .as_ref()
+            .map(|s| {
+                s.registry
+                    .structures
+                    .iter()
+                    .filter(|s| !s.biomes.is_disjoint(&ids))
+                    .map(|s| s.name.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
     }
     fn data(&self) -> &Arc<GeneratorData> {
         &self.data
@@ -2366,6 +2388,9 @@ impl OverworldGenerator {
     }
     pub fn data(&self) -> &Arc<GeneratorData> {
         self.pipeline.data()
+    }
+    pub fn compass_catalog(&self, structures: bool) -> Vec<String> {
+        self.pipeline.compass_catalog(structures)
     }
     pub fn sea_level(&self) -> i32 {
         self.pipeline.sea_level()

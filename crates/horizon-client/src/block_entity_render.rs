@@ -259,6 +259,7 @@ enum SkullType {
 #[derive(Clone, Debug)]
 enum Kind {
     None,
+    Elevator,
     Chest {
         /// The block (`neighbourState.is(state.getBlock())`).
         block: String,
@@ -319,6 +320,9 @@ fn intern(facing: &str) -> &'static str {
     }
 }
 fn classify(name: &str, prop: &dyn Fn(&str) -> Option<String>) -> Kind {
+    if crate::elevator_options::is_elevator(name) {
+        return Kind::Elevator;
+    }
     let name = name.strip_prefix("minecraft:").unwrap_or(name);
     let facing = || intern(&prop("facing").unwrap_or_default());
     let chest = |texture: &'static str, left: &'static str, right: &'static str| {
@@ -735,6 +739,7 @@ pub struct Scene<'a> {
 }
 
 pub struct BlockEntityRenderer {
+    elevators_enabled: bool,
     models: HashMap<&'static str, ModelPart>,
     kinds: Vec<Kind>,
     // Closed chest geometry: dimension lighting, chest part, horizontal facing.
@@ -793,6 +798,7 @@ impl BlockEntityRenderer {
             .filter_map(|(key, layer)| all.get(*layer).map(|v| (*key, ModelPart::parse(v))))
             .collect();
         let mut renderer = Self::new(models, registry);
+        renderer.elevators_enabled = crate::elevator::Elevators::load(root)?.is_enabled();
         renderer.visibility = Some(Mutex::new(crate::models::load_visibility(root, registry)?));
         // Sherd items: provides_pottery_pattern -> decorated_pot_pattern asset id.
         if let Ok(bytes) = std::fs::read(root.join("items.json")) {
@@ -868,6 +874,7 @@ impl BlockEntityRenderer {
             })
             .collect();
         Self {
+            elevators_enabled: false,
             models,
             kinds,
             closed_chests,
@@ -1082,6 +1089,23 @@ impl BlockEntityRenderer {
         let none = |_: &str, _: &mut [f32; 9]| {};
         match kind {
             Kind::None => {}
+            Kind::Elevator => {
+                if !self.elevators_enabled {
+                    return;
+                }
+                let Some(crate::containers::BlockEntity::Elevator(block)) =
+                    scene.world.block_entities.get(&(pos[0], pos[1], pos[2]))
+                else {
+                    return;
+                };
+                if let Some(paint) = paint(
+                    "elevatorid:block/arrow",
+                    0xFFFFFF,
+                    scene.world.light(pos[0], pos[1] + 1, pos[2]),
+                ) {
+                    draw_elevator_arrow(block.options, base, paint, out);
+                }
+            }
             Kind::Sign {
                 hanging,
                 wall,
@@ -1745,6 +1769,45 @@ pub fn gateway_beam(
     }
 }
 
+fn draw_elevator_arrow(
+    options: crate::elevator_options::ElevatorOptions,
+    base: Mat4,
+    paint: Paint,
+    out: &mut Vec<Vertex>,
+) {
+    use crate::elevator_options::Heading;
+    if !options.directional || options.hide_arrow {
+        return;
+    }
+    let angle = match options.heading {
+        Heading::East => 0.0,
+        Heading::North => PI / 2.0,
+        Heading::West => PI,
+        Heading::South => -PI / 2.0,
+    };
+    let matrix = base
+        * Mat4::from_translation(Vec3::new(0.5, 1.001, 0.5))
+        * Mat4::from_rotation_y(angle)
+        * Mat4::from_translation(Vec3::new(0.3, 0.0, 0.0));
+    let r = paint.sprite;
+    let color = pack_color(paint.tint, 255, diffuse(Vec3::Y, paint.lights));
+    for (position, uv) in [
+        ([0.175, 0.0, 0.175], [r.u0, r.v0]),
+        ([0.175, 0.0, -0.175], [r.u0, r.v1]),
+        ([-0.175, 0.0, -0.175], [r.u1, r.v1]),
+        ([-0.175, 0.0, 0.175], [r.u1, r.v0]),
+    ] {
+        out.push(Vertex {
+            normal: [0; 4],
+            pos: matrix.transform_point3(Vec3::from(position)).to_array(),
+            uv,
+            layer: 0,
+            color,
+            light: paint.light,
+        });
+    }
+}
+
 /// Entity-shader layers for `rendertype_end_portal`: end portals draw 15
 /// layers of `end_portal.png` over `end_sky.png`, End gateways 16.
 pub const END_PORTAL_LAYER: u32 = 9;
@@ -1780,6 +1843,86 @@ fn portal_cube(m: Mat4, faces: &[Direction], layer: u32, out: &mut Vec<Vertex>) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn elevator_arrows_follow_heading_and_visibility() {
+        use crate::elevator_options::{ElevatorOptions, Heading};
+        let paint = Paint {
+            sprite: Rect {
+                u0: 0.2,
+                v0: 0.3,
+                u1: 0.4,
+                v1: 0.5,
+                w: 64,
+                h: 64,
+            },
+            tint: 0xFFFFFF,
+            light: 0xF0,
+            lights: diffuse_lights(false),
+        };
+        for (heading, expected_center, expected_tip_side) in [
+            (Heading::East, [0.8, 1.001, 0.5], [0.975, 1.001, 0.5]),
+            (Heading::North, [0.5, 1.001, 0.2], [0.5, 1.001, 0.025]),
+            (Heading::West, [0.2, 1.001, 0.5], [0.025, 1.001, 0.5]),
+            (Heading::South, [0.5, 1.001, 0.8], [0.5, 1.001, 0.975]),
+        ] {
+            let mut vertices = Vec::new();
+            draw_elevator_arrow(
+                ElevatorOptions {
+                    directional: true,
+                    heading,
+                    hide_arrow: false,
+                },
+                Mat4::IDENTITY,
+                paint,
+                &mut vertices,
+            );
+            assert_eq!(vertices.len(), 4);
+            let center = vertices.iter().map(|v| Vec3::from(v.pos)).sum::<Vec3>() / 4.0;
+            assert!(center.abs_diff_eq(Vec3::from(expected_center), 0.00001));
+            let tip_side = (Vec3::from(vertices[0].pos) + Vec3::from(vertices[1].pos)) / 2.0;
+            assert!(tip_side.abs_diff_eq(Vec3::from(expected_tip_side), 0.00001));
+            let normal = (Vec3::from(vertices[1].pos) - Vec3::from(vertices[0].pos))
+                .cross(Vec3::from(vertices[2].pos) - Vec3::from(vertices[0].pos));
+            assert!(normal.y > 0.0);
+            assert_eq!(vertices[0].uv, [0.2, 0.3]);
+            assert_eq!(vertices[2].uv, [0.4, 0.5]);
+        }
+        for (directional, hide_arrow) in [(false, false), (false, true), (true, true)] {
+            let mut vertices = Vec::new();
+            draw_elevator_arrow(
+                ElevatorOptions {
+                    directional,
+                    heading: Heading::East,
+                    hide_arrow,
+                },
+                Mat4::IDENTITY,
+                paint,
+                &mut vertices,
+            );
+            assert!(vertices.is_empty());
+        }
+    }
+
+    #[test]
+    fn elevator_renderer_recognizes_only_declared_color_family() {
+        assert!(matches!(
+            classify("elevatorid:elevator_white", &|_| None),
+            Kind::Elevator
+        ));
+        assert!(matches!(
+            classify("elevatorid:elevator_light_gray", &|_| None),
+            Kind::Elevator
+        ));
+        assert!(matches!(
+            classify("elevatorid:elevator_missing", &|_| None),
+            Kind::None
+        ));
+        assert!(matches!(
+            classify("minecraft:elevator_white", &|_| None),
+            Kind::None
+        ));
+    }
+
     #[test]
     #[ignore = "requires prepared models/textures in HORIZON_TEST_RESOURCES"]
     fn entity_block_particles_and_breaking_use_exported_models() -> crate::Result<()> {

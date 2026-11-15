@@ -98,6 +98,7 @@ impl Game<'_> {
         self.title.is_some()
             || self.screen != Screen::Playing
             || self.sign_edit.is_some()
+            || self.elevator_edit.is_some()
             || self.book.is_some()
     }
 
@@ -144,7 +145,11 @@ impl Game<'_> {
                 targets.push(t);
             }
         }
-        if self.title.is_some() || self.sign_edit.is_some() || self.book.is_some() {
+        if self.title.is_some()
+            || self.sign_edit.is_some()
+            || self.elevator_edit.is_some()
+            || self.book.is_some()
+        {
             return targets;
         }
         let Some(batch) = self.gui_scale() else {

@@ -343,21 +343,28 @@ impl Enchantments {
         }
         (name, self.is_curse(id))
     }
-    /// Tooltip lines for a level list, in `#tooltip_order` then remaining order.
-    pub fn tooltip(&self, levels: &[(Arc<str>, u32)]) -> Vec<(String, bool)> {
+    /// Enchantments in `#tooltip_order`, then the remaining input order.
+    pub fn ordered<'a>(&self, levels: &'a [(Arc<str>, u32)]) -> Vec<(&'a str, u32)> {
         let order = self.tag("minecraft:tooltip_order");
         let mut out = Vec::new();
         for id in order {
-            if let Some((_, l)) = levels.iter().find(|(e, _)| e == id) {
-                out.push(self.full_name(id, *l));
+            if let Some((id, level)) = levels.iter().find(|(e, _)| e == id) {
+                out.push((id.as_ref(), *level));
             }
         }
-        for (id, l) in levels {
+        for (id, level) in levels {
             if !order.contains(id) {
-                out.push(self.full_name(id, *l));
+                out.push((id.as_ref(), *level));
             }
         }
         out
+    }
+
+    pub fn tooltip(&self, levels: &[(Arc<str>, u32)]) -> Vec<(String, bool)> {
+        self.ordered(levels)
+            .into_iter()
+            .map(|(id, level)| self.full_name(id, level))
+            .collect()
     }
 
     // ---- Enchanting table (EnchantmentHelper) ----
@@ -1083,6 +1090,14 @@ pub(crate) mod tests {
             (Arc::from("minecraft:mending"), 1),
             (Arc::from("minecraft:sharpness"), 2),
         ];
+        assert_eq!(
+            e.ordered(&levels),
+            [
+                ("minecraft:sharpness", 2),
+                ("minecraft:unbreaking", 3),
+                ("minecraft:mending", 1)
+            ]
+        );
         let lines: Vec<String> = e.tooltip(&levels).into_iter().map(|l| l.0).collect();
         assert_eq!(lines, ["sharpness II", "unbreaking III", "mending"]);
         assert!(!e.compatible("minecraft:sharpness", "minecraft:smite"));

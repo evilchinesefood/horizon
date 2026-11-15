@@ -24,6 +24,7 @@ pub fn from_network(s: &Stack, builtin: &Builtin, synced: &Dynamic) -> ItemStack
     if let Some(data) = data {
         *out.data_mut() = *data;
     }
+    crate::compass::refresh_needle(&mut out);
     out.tidy();
     out
 }
@@ -351,5 +352,163 @@ mod tests {
             from_network(&wire, &builtin, &dynamic).potion(),
             Some("minecraft:swiftness")
         );
+    }
+    #[test]
+    fn tooltip_visibility_survives_server_inventory_wire_roundtrip() {
+        use crate::item_tooltip::TooltipDisplay;
+        use horizon_protocol::{
+            buf::{Codec, Reader, Writer},
+            item::Slot,
+        };
+        let mut components = vec![String::new(); 60];
+        for (id, name) in [
+            (component::TOOLTIP_DISPLAY, "minecraft:tooltip_display"),
+            (
+                component::STORED_ENCHANTMENTS,
+                "minecraft:stored_enchantments",
+            ),
+        ] {
+            components[id as usize] = name.to_owned();
+        }
+        let builtin = Builtin {
+            registries: [
+                (
+                    "minecraft:item".to_owned(),
+                    Ids::from_names(vec!["minecraft:enchanted_book".to_owned()]),
+                ),
+                (
+                    "minecraft:data_component_type".to_owned(),
+                    Ids::from_names(components),
+                ),
+            ]
+            .into(),
+        };
+        let dynamic = Dynamic {
+            registries: [(
+                "minecraft:enchantment".to_owned(),
+                vec![("minecraft:mending".to_owned(), None)],
+            )]
+            .into(),
+        };
+        for (display, expected_name, expected_enchantments) in [
+            (None, true, true),
+            (
+                Some(Tag::compound([
+                    ("hide_tooltip", Tag::Byte(0)),
+                    (
+                        "hidden_components",
+                        Tag::List(vec![Tag::String("minecraft:stored_enchantments".into())]),
+                    ),
+                ])),
+                true,
+                false,
+            ),
+            (
+                Some(Tag::compound([
+                    ("hide_tooltip", Tag::Byte(1)),
+                    ("hidden_components", Tag::List(vec![])),
+                ])),
+                false,
+                false,
+            ),
+        ] {
+            let mut stack = ItemStack::new("minecraft:enchanted_book", 1);
+            stack
+                .data_mut()
+                .stored_enchantments
+                .push((Arc::from("minecraft:mending"), 1));
+            stack
+                .data_mut()
+                .set_other("minecraft:tooltip_display", display.clone());
+            let wire = crate::lan::guest::stack_to_network(
+                |_| 0,
+                |registry, name| {
+                    builtin
+                        .get(registry)
+                        .and_then(|ids| ids.id(name))
+                        .or_else(|| dynamic.id(registry, name))
+                },
+                &Some(stack),
+            )
+            .unwrap();
+            assert_eq!(
+                wire.component(component::TOOLTIP_DISPLAY).is_some(),
+                display.is_some()
+            );
+            let mut bytes = Writer::new();
+            Slot::write(&Some(wire), &mut bytes);
+            let decoded = Slot::read(&mut Reader::new(&bytes.data)).unwrap().unwrap();
+            let back = from_network(&decoded, &builtin, &dynamic);
+            assert_eq!(
+                back.stored_enchantments(),
+                &[(Arc::from("minecraft:mending"), 1)]
+            );
+            assert_eq!(
+                back.data()
+                    .and_then(|data| data.other("minecraft:tooltip_display")),
+                display.as_ref()
+            );
+            let tooltip = TooltipDisplay::for_stack(&back);
+            assert_eq!(tooltip.name_visible(false), expected_name);
+            assert_eq!(
+                tooltip.shows("minecraft:stored_enchantments"),
+                expected_enchantments
+            );
+        }
+    }
+    #[test]
+    fn compass_target_survives_actual_inventory_wire_and_restores_needle() {
+        use horizon_protocol::{
+            buf::{Codec, Reader, Writer},
+            item::Slot,
+        };
+        let mut components = vec![String::new(); component::CUSTOM_DATA as usize + 1];
+        components[component::CUSTOM_DATA as usize] = "minecraft:custom_data".into();
+        let builtin = Builtin {
+            registries: [
+                (
+                    "minecraft:item".into(),
+                    Ids::from_names(vec!["naturescompass:naturescompass".into()]),
+                ),
+                (
+                    "minecraft:data_component_type".into(),
+                    Ids::from_names(components),
+                ),
+            ]
+            .into(),
+        };
+        let dynamic = Dynamic {
+            registries: Default::default(),
+        };
+        let mut stack = ItemStack::new("naturescompass:naturescompass", 1);
+        let mut state = crate::compass::State {
+            identity: 71,
+            target: Some(crate::compass::Target {
+                name: "minecraft:plains".into(),
+                dimension: "minecraft:overworld".into(),
+                pos: [12, 64, 44],
+            }),
+        };
+        for reset in [false, true] {
+            if reset {
+                state.target = None;
+            }
+            crate::compass::write(&mut stack, &state);
+            let wire =
+                crate::lan::guest::stack_to_network(|_| 0, |_, _| None, &Some(stack.clone()))
+                    .unwrap();
+            let mut bytes = Writer::new();
+            Slot::write(&Some(wire), &mut bytes);
+            let decoded = Slot::read(&mut Reader::new(&bytes.data)).unwrap().unwrap();
+            let back = from_network(&decoded, &builtin, &dynamic);
+            assert_eq!(crate::compass::state(&back), state);
+            assert_eq!(
+                back.data()
+                    .unwrap()
+                    .other("minecraft:lodestone_tracker")
+                    .is_some(),
+                !reset
+            );
+        }
     }
 }

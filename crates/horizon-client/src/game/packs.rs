@@ -142,6 +142,7 @@ impl Game<'_> {
         }
         let server = &self.server_packs.active;
         let root = startup_root(&vanilla, &self.settings.resource_packs, server)?;
+        let root = super::mods::content_root(&root, &self.mods.content_at_start, &self.mods.dev);
         self.reload_resources(&root)
     }
     fn reload_resources(&mut self, root: &Path) -> horizon_client::Result<()> {

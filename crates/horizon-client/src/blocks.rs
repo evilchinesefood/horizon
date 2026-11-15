@@ -397,7 +397,8 @@ impl BlockFacts {
                 requires_tool: entry.requires_tool,
                 replaceable: entry.replaceable,
                 random_ticks: entry.random_ticks,
-                block_entity: entry.block_entity,
+                block_entity: entry.block_entity
+                    || crate::elevator_options::is_elevator(&state.name),
                 render_shape: match entry.render_shape.as_deref() {
                     Some("INVISIBLE") => RenderShape::Invisible,
                     Some("ENTITYBLOCK_ANIMATED") => RenderShape::Animated,

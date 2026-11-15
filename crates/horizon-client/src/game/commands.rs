@@ -2018,7 +2018,10 @@ impl Game<'_> {
             if Some(s) != barrier {
                 count += 1;
             }
-            if let Some(e) = entity {
+            if let Some(mut e) = entity {
+                if let horizon_client::containers::BlockEntity::Elevator(block) = &mut e {
+                    block.renew_instance();
+                }
                 self.world.block_entities.insert((to[0], to[1], to[2]), e);
             }
         }

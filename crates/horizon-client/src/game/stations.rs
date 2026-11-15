@@ -1730,21 +1730,24 @@ impl Game<'_> {
             push(&mut lines, format!(" {p}"), rgba(170, 170, 170, 255));
             push(&mut lines, format!(" {m}"), rgba(170, 170, 170, 255));
         }
-        if display.shows("minecraft:stored_enchantments") {
-            for (text, curse) in e.tooltip(stack.stored_enchantments()) {
-                push(
-                    &mut lines,
-                    text,
-                    if curse {
-                        rgba(255, 85, 85, 255)
-                    } else {
-                        rgba(170, 170, 170, 255)
-                    },
-                );
+        use horizon_client::enchantment_descriptions::Subject;
+        for (component, levels, subject) in [
+            (
+                "minecraft:stored_enchantments",
+                stack.stored_enchantments(),
+                Subject::Stored,
+            ),
+            (
+                "minecraft:enchantments",
+                stack.enchantments(),
+                Subject::Applied,
+            ),
+        ] {
+            if !display.shows(component) {
+                continue;
             }
-        }
-        if display.shows("minecraft:enchantments") {
-            for (text, curse) in e.tooltip(stack.enchantments()) {
+            for (id, level) in e.ordered(levels) {
+                let (text, curse) = e.full_name(id, level);
                 push(
                     &mut lines,
                     text,
@@ -1754,6 +1757,28 @@ impl Game<'_> {
                         rgba(170, 170, 170, 255)
                     },
                 );
+                if self
+                    .mods
+                    .content_is_enabled("enchdesc", &self.settings.mods.enabled)
+                    && let Some(description) = self.pack.enchantment_descriptions.description(
+                        id,
+                        subject,
+                        horizon_client::keybinds::key_code(self.settings.keys.get("key.sneak"))
+                            .is_some_and(|key| self.physical_keys.contains(&key)),
+                        &translate,
+                    )
+                {
+                    let screen_width = self.renderer.as_ref().map_or(320.0, |renderer| {
+                        HudBatch::new([renderer.config.width, renderer.config.height]).width
+                    });
+                    let text = horizon_client::text::Text::legacy(&description.text);
+                    for (line, _) in self.gui.atlas.font.split_lines(
+                        &text,
+                        description.max_width.min((screen_width - 24.0).max(1.0)),
+                    ) {
+                        lines.push((line, description.color));
+                    }
+                }
             }
         }
         // BannerPatternLayers.addToTooltip: up to six layer names.

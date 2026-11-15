@@ -459,6 +459,7 @@ impl Game<'_> {
 
     /// Disconnect and return to the multiplayer screen (DisconnectedScreen).
     pub(super) fn leave_server(&mut self, reason: Option<String>) -> Result<()> {
+        self.ore_release();
         if reason.is_none() && self.integrated.as_ref().is_some_and(|s| !s.stopped()) {
             return self.begin_closing_save(false);
         }
@@ -1601,6 +1602,7 @@ impl Game<'_> {
                 ));
             }
             C::Respawn(p) => {
+                self.ore_release();
                 // A new player, without effects: the server sends them again.
                 self.potions.effects.clear();
                 self.enter_remote_dimension(&p.spawn, true);
@@ -2541,6 +2543,12 @@ impl Game<'_> {
                 self.drop_remote_chunks_out_of_range();
             }
             C::BlockEntityData(p) => self.remote_block_entity_data(p.pos, p.kind, &p.tag),
+            C::CustomPayload(p) if p.channel == horizon_client::compass::CHANNEL => {
+                self.remote_compass_message(&p.data);
+            }
+            C::CustomPayload(p) if p.channel == horizon_client::elevator_options::CHANNEL => {
+                self.remote_elevator_message(&p.data)
+            }
             C::OpenSignEditor(p) => self.remote_open_sign_editor(p),
             C::OpenBook(p) => self.remote_open_book(p.hand),
             // handleSetSpawn: ClientLevel.setRespawnData, which spawn compasses point at.
@@ -3099,7 +3107,9 @@ impl Game<'_> {
         if self.player.is_none() {
             return Ok(());
         }
-        let playing = self.screen == Screen::Playing;
+        let playing = self.screen == Screen::Playing
+            && self.elevator_edit.is_none()
+            && self.compass_picker.is_none();
         let held = |k| playing && self.keys.contains(&k);
         let keys = Keys {
             forward: held(KeyCode::KeyW),
@@ -3785,6 +3795,10 @@ impl Game<'_> {
     }
     /// Minecraft.startUseItem: use one crosshair target, then the item itself.
     fn remote_use(&mut self) {
+        if self.with_hand(Hand::Main, |g| g.use_compass()) {
+            self.use_delay = 4;
+            return;
+        }
         // Minecraft.startUseItem returns before resetting rightClickDelay
         // while a survival block break is active.
         if self.remote.as_ref().is_some_and(|r| r.destroying.is_some()) {
@@ -4100,6 +4114,9 @@ impl Game<'_> {
     /// MultiPlayerGameMode.useItem for `hand`, if it holds something: whether
     /// the click ends there, as far as this client can tell (`item_has_use`).
     fn remote_use_item(&mut self, hand: Hand) -> bool {
+        if self.with_hand(hand, |g| g.use_compass()) {
+            return true;
+        }
         let Some(held) = self.with_hand(hand, |g| g.held().cloned()) else {
             return false;
         };

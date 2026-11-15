@@ -36,6 +36,9 @@ pub(super) struct ModsState {
     mods: Mods,
     /// `--dev-mod PATH`: always on, reloaded when rebuilt.
     pub(super) dev: Vec<PathBuf>,
+    /// Registries stay fixed until restart; visual reloads retain this content set.
+    pub(super) content_at_start: std::collections::BTreeSet<String>,
+    dev_ids: std::collections::BTreeSet<String>,
     /// When dev mods were last checked for a rebuild.
     #[cfg(feature = "mods")]
     checked: Option<Instant>,
@@ -69,6 +72,32 @@ struct ModScreen {
     scrolls: Vec<ui::Scroll>,
 }
 impl ModsState {
+    // Without the optional runtime all fields are supplied explicitly.
+    #[cfg_attr(not(feature = "mods"), allow(clippy::needless_update))]
+    pub(super) fn with_content(
+        enabled: &std::collections::BTreeSet<String>,
+        dev: &[PathBuf],
+    ) -> Self {
+        Self {
+            content_at_start: enabled.clone(),
+            dev: dev.to_vec(),
+            dev_ids: dev
+                .iter()
+                .filter_map(|path| horizon_mods::Package::read(path).ok())
+                .map(|package| package.manifest.id)
+                .collect(),
+            ..Self::default()
+        }
+    }
+
+    pub(super) fn content_is_enabled(
+        &self,
+        id: &str,
+        enabled: &std::collections::BTreeSet<String>,
+    ) -> bool {
+        enabled.contains(id) || self.dev_ids.contains(id)
+    }
+
     /// The chat's command tree: vanilla's, plus the running mods' commands.
     pub(super) fn dispatcher(&self) -> &Dispatcher {
         #[cfg(feature = "mods")]
@@ -765,3 +794,26 @@ impl Game<'_> {
 const MOD_UI_TOP: f32 = 40.0;
 #[cfg(feature = "mods")]
 const MOD_UI_COLUMN: f32 = 200.0;
+
+#[cfg(test)]
+mod tests {
+    use super::ModsState;
+    use std::collections::BTreeSet;
+
+    #[test]
+    fn presentation_toggle_preserves_startup_registry_selection() {
+        let mut enabled = BTreeSet::from(["enchdesc".to_owned()]);
+        let mods = ModsState::with_content(&enabled, &[]);
+        assert!(mods.content_is_enabled("enchdesc", &enabled));
+        enabled.clear();
+        assert!(!mods.content_is_enabled("enchdesc", &enabled));
+        assert_eq!(
+            mods.content_at_start,
+            BTreeSet::from(["enchdesc".to_owned()])
+        );
+        enabled.insert("enchdesc".to_owned());
+        assert!(mods.content_is_enabled("enchdesc", &enabled));
+        enabled.insert("new_registry".to_owned());
+        assert!(!mods.content_at_start.contains("new_registry"));
+    }
+}

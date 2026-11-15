@@ -26,6 +26,7 @@ mod combat;
 mod command_blocks;
 mod command_harness;
 mod commands;
+mod compass;
 mod composter;
 mod consume;
 mod control;
@@ -42,6 +43,8 @@ mod dispense_fixture;
 mod dispenser;
 mod dragon;
 mod dynamic_lights;
+mod elevator_options;
+mod elevators;
 mod enchant_effects;
 mod end;
 mod entity_culling;
@@ -109,6 +112,7 @@ mod net_harness;
 mod nether_portal;
 mod ominous_item_spawner;
 mod options;
+mod ore_excavation;
 mod packs;
 mod pad;
 mod pad_menu;
@@ -1058,6 +1062,9 @@ pub struct PackResources {
     /// Item definitions, baked item models and special renderers.
     item_renderer: Arc<horizon_client::item_render::ItemRenderer>,
     names: Arc<Names>,
+    elevators: Arc<horizon_client::elevator::Elevators>,
+    enchantment_descriptions:
+        Arc<horizon_client::enchantment_descriptions::EnchantmentDescriptions>,
     /// clouds.png: (width, height, filled cells).
     clouds: Arc<(u32, u32, Vec<bool>)>,
     /// misc/forcefield.png: (width, height, RGBA) for the world border wall.
@@ -1074,6 +1081,8 @@ impl PackResources {
         biomes: Arc<Biomes>,
         light: Arc<LightTables>,
     ) -> Result<Self> {
+        let elevators = horizon_client::elevator::Elevators::load(root)?;
+        elevators.validate(assets.registry)?;
         let visibility = models::load_visibility(root, assets.registry)?;
         let tables = Arc::new(MeshTables::new(&assets, &render, facts, visibility)?);
         let item_renderer = horizon_client::item_render::ItemRenderer::load_with_library(
@@ -1099,6 +1108,10 @@ impl PackResources {
             render,
             item_renderer: Arc::new(item_renderer),
             names: Arc::new(Names::load(root)),
+            elevators: Arc::new(elevators),
+            enchantment_descriptions: Arc::new(
+                horizon_client::enchantment_descriptions::EnchantmentDescriptions::load(root)?,
+            ),
             clouds: Arc::new(load_clouds(root)),
             forcefield: Arc::new(load_forcefield(root)),
         })
@@ -1162,6 +1175,9 @@ struct Game<'a> {
     lod_covered_at: Option<(u64, (i32, i32), i32)>,
     options: Options,
     player: Option<PlayerMotion>,
+    elevator_input: u8,
+    ore_excavation: ore_excavation::ActorState,
+    ore_intent_sent: bool,
     spawn: Option<Vec3>,
     clock: FixedStep,
     previous_position: Vec3,
@@ -1276,6 +1292,9 @@ struct Game<'a> {
     pickups: pickups::Pickups,
     /// Sign text being edited (`SignEditScreen`).
     sign_edit: Option<sign_edit::SignEditor>,
+    elevator_edit: Option<elevator_options::Editor>,
+    compass_picker: Option<compass::Picker>,
+    compass_authority: compass::Authority,
     /// An open book, book and quill or lectern screen.
     book: Option<books::BookScreen>,
     /// Lecterns whose page-turn pulse is running (ticks left).
@@ -3253,9 +3272,21 @@ impl Game<'_> {
         self.stats.add("used", &stack.item, 1);
     }
     fn break_block(&mut self, pos: [i32; 3]) -> Result<()> {
-        self.with_player_actor(|game| game.break_block_as_player(pos))
+        self.with_player_actor(|game| {
+            let family = horizon_client::ore_excavation::ore_family(
+                &game
+                    .res
+                    .facts()
+                    .get(game.world.block(pos[0], pos[1], pos[2]))
+                    .name,
+            );
+            if game.break_block_as_player(pos)? {
+                game.ore_seed(pos, family);
+            }
+            Ok(())
+        })
     }
-    fn break_block_as_player(&mut self, pos: [i32; 3]) -> Result<()> {
+    fn break_block_as_player(&mut self, pos: [i32; 3]) -> Result<bool> {
         self.pad_rumble(horizon_client::gamepad::Rumble::BlockBroken);
         // ServerPlayerGameMode.destroyBlock.
         let state = self.world.block(pos[0], pos[1], pos[2]);
@@ -3339,7 +3370,7 @@ impl Game<'_> {
         }
         self.pending.clear(pos);
         self.process_level_events()?;
-        Ok(())
+        Ok(removed)
     }
     /// The hand whose use ended the click, if any.
     fn use_item(&mut self) -> Result<Option<Hand>> {
@@ -3406,6 +3437,9 @@ impl Game<'_> {
     /// One hand's turn in `startUseItem`: `useItemOn` the block aimed at,
     /// then `useItem`. Whether the click ends here (it acted or failed).
     fn use_hand(&mut self, block_hit: Option<&Hit>) -> Result<bool> {
+        if self.use_compass() {
+            return Ok(true);
+        }
         // isSecondaryUseActive with something in either hand keeps blocks
         // from reacting.
         let sneaking = self.keys.contains(&KeyCode::ShiftLeft);
@@ -3416,6 +3450,10 @@ impl Game<'_> {
             && let Some(hit) = block_hit
         {
             let held = self.held().cloned();
+            if held.is_none() && self.hand == Hand::Main && self.use_elevator_options(hit.pos) {
+                self.swing_arm();
+                return Ok(true);
+            }
             if self.use_lectern(hit.pos, held.as_ref()) {
                 self.swing_arm();
                 return Ok(true);
@@ -4091,6 +4129,9 @@ impl Game<'_> {
         self.with_level(|b, level, ticks| b.notify_written(level, ticks, position, flags));
     }
     fn tick(&mut self) -> Result<()> {
+        self.ore_input();
+        self.tick_elevator_editor();
+        self.tick_compass();
         self.tick_debug_keys()?;
         self.tick_debug_charts();
         if self.remote.is_some() {
@@ -4150,6 +4191,7 @@ impl Game<'_> {
         }
         let riding = self.riding.is_some();
         let entity_collisions = self.player_entity_collisions();
+        let elevator_collisions = self.elevator_entity_collisions();
         let spin_targets = self.spin_targets();
         self.sync_player_body();
         let Some(player) = self.player.as_mut() else {
@@ -4167,9 +4209,12 @@ impl Game<'_> {
         if !self.streaming.is_lit(cx, cz) {
             return Ok(());
         }
-        let playing = self.screen == Screen::Playing && self.sleeping.is_none();
+        let playing = self.screen == Screen::Playing
+            && self.sleeping.is_none()
+            && self.elevator_edit.is_none()
+            && self.compass_picker.is_none();
         let held = |k| playing && self.keys.contains(&k);
-        let keys = Keys {
+        let mut keys = Keys {
             forward: held(KeyCode::KeyW),
             backward: held(KeyCode::KeyS),
             left: held(KeyCode::KeyA),
@@ -4180,6 +4225,37 @@ impl Game<'_> {
             analog: None,
         }
         .with_stick(stick.filter(|_| playing));
+        let input = (u8::from(keys.jump) * 16) | (u8::from(keys.shift) * 32);
+        let activation = horizon_client::elevator::pressed(self.elevator_input, input);
+        self.elevator_input = input;
+        if !riding
+            && player.ground.on_ground
+            && self.mode != horizon_client::command::args::GameMode::Spectator
+            && player.health.health() > 0.0
+            && self
+                .mods
+                .content_is_enabled("elevatorid", &self.settings.mods.enabled)
+            && let Some(direction) = activation
+        {
+            let feet = [player.position.x, player.position.y, player.position.z];
+            if elevators::travel(
+                &self.pack.elevators,
+                MotionWorld {
+                    entities: &elevator_collisions,
+                    player,
+                    scene: &mut self.world,
+                    assets: &self.pack.assets,
+                    collision_binding: self.collision,
+                    resources: self.motion,
+                },
+                feet,
+                direction,
+            )? {
+                keys.jump = false;
+                self.yaw = player.yaw;
+                self.pitch = player.pitch;
+            }
+        }
         if !riding {
             self.previous_position = player.position;
         }
@@ -4422,6 +4498,7 @@ impl Game<'_> {
         // ticks before any entity, so what they drop or spawn (dispensed
         // items, popped crops) moves on the tick it appears, as in vanilla.
         horizon_client::spans::time("tick_local_hand", || self.tick_local_hand())?;
+        self.ore_tick()?;
         horizon_client::spans::time("postprocess_chunks", || self.postprocess_chunks())?;
         if running {
             horizon_client::spans::time("tick_blocks", || self.tick_blocks())?;
@@ -5090,6 +5167,8 @@ impl Game<'_> {
         self.draw_pack_toasts(&mut batch);
         self.remote_hud(&mut batch);
         self.draw_sign_editor(&mut batch);
+        self.draw_elevator_editor(&mut batch);
+        self.draw_compass(&mut batch);
         self.draw_book(&mut batch);
         batch
     }
@@ -5130,7 +5209,8 @@ impl Game<'_> {
             Some(BlockEntity::Brewing(_)) => v.extend(300..305),
             Some(BlockEntity::Crafter(_)) => v.extend(300..310),
             Some(
-                BlockEntity::Sign(_)
+                BlockEntity::Elevator(_)
+                | BlockEntity::Sign(_)
                 | BlockEntity::Jukebox(_)
                 | BlockEntity::Beacon(_)
                 | BlockEntity::Lectern(_)
@@ -5399,7 +5479,8 @@ impl Game<'_> {
                 Some(BlockEntity::Brewing(_)) => {}
                 Some(BlockEntity::Crafter(_)) => self.draw_crafter_screen(batch, ox, oy),
                 Some(
-                    BlockEntity::Sign(_)
+                    BlockEntity::Elevator(_)
+                    | BlockEntity::Sign(_)
                     | BlockEntity::Jukebox(_)
                     | BlockEntity::Beacon(_)
                     | BlockEntity::Lectern(_)
@@ -7801,6 +7882,7 @@ impl Game<'_> {
     /// Change dimension through a portal (Entity.changeDimension with
     /// PortalForcer placement once the destination has loaded).
     fn enter_dimension(&mut self, target: Dim) -> Result<()> {
+        self.ore_release();
         let Some(player) = self.player.take() else {
             return Ok(());
         };
@@ -10903,6 +10985,12 @@ impl ApplicationHandler for Game<'_> {
         if let WindowEvent::Focused(false) = &event {
             self.physical_keys.clear();
         }
+        if matches!(
+            &event,
+            WindowEvent::KeyboardInput { .. } | WindowEvent::Focused(false)
+        ) {
+            self.ore_input();
+        }
         if let WindowEvent::ModifiersChanged(m) = &event {
             self.modifiers = m.state();
         }
@@ -11022,6 +11110,8 @@ impl ApplicationHandler for Game<'_> {
                             && self.settings.file.bool("pauseOnLostFocus")
                             && self.book.is_none()
                             && self.sign_edit.is_none()
+                            && self.elevator_edit.is_none()
+                            && self.compass_picker.is_none()
                         {
                             self.screen = Screen::Paused;
                         }
@@ -11082,6 +11172,8 @@ impl ApplicationHandler for Game<'_> {
                         title.scroll_worlds(d, self.cursor, (batch.width, batch.height));
                     }
                     if self.screen == Screen::Playing
+                        && self.elevator_edit.is_none()
+                        && self.compass_picker.is_none()
                         && self.sleeping.is_none()
                         && self.player.is_some()
                         && !self.extras_scroll(d)
@@ -11218,6 +11310,26 @@ impl ApplicationHandler for Game<'_> {
                             .map(|r| [r.config.width, r.config.height])
                             .unwrap_or([1, 1]);
                         self.book_click(size);
+                    }
+                }
+                WindowEvent::MouseInput { state, button, .. } if self.compass_picker.is_some() => {
+                    if state == ElementState::Pressed && button == MouseButton::Left {
+                        let size = self
+                            .renderer
+                            .as_ref()
+                            .map(|r| [r.config.width, r.config.height])
+                            .unwrap_or([1, 1]);
+                        self.compass_click(size);
+                    }
+                }
+                WindowEvent::MouseInput { state, button, .. } if self.elevator_edit.is_some() => {
+                    if state == ElementState::Pressed && button == MouseButton::Left {
+                        let size = self
+                            .renderer
+                            .as_ref()
+                            .map(|r| [r.config.width, r.config.height])
+                            .unwrap_or([1, 1]);
+                        self.elevator_editor_click(size);
                     }
                 }
                 WindowEvent::MouseInput { state, button, .. } if self.sign_edit.is_some() => {
@@ -11361,6 +11473,12 @@ impl ApplicationHandler for Game<'_> {
                             self.keys.remove(&key);
                         }
                     }
+                }
+                WindowEvent::KeyboardInput { event, .. } if self.compass_picker.is_some() => {
+                    self.compass_key(&event);
+                }
+                WindowEvent::KeyboardInput { event, .. } if self.elevator_edit.is_some() => {
+                    self.elevator_editor_key(&event);
                 }
                 WindowEvent::KeyboardInput { event, .. } if self.sign_edit.is_some() => {
                     self.sign_edit_key(&event)
@@ -11517,6 +11635,8 @@ impl ApplicationHandler for Game<'_> {
                     if self.screen == Screen::Playing
                         && self.title.is_none()
                         && self.sign_edit.is_none()
+                        && self.elevator_edit.is_none()
+                        && self.compass_picker.is_none()
                         && self.book.is_none()
                     {
                         let turn = |k| f32::from(u8::from(self.keys.contains(&k)));
@@ -11796,6 +11916,7 @@ impl<'a> Game<'a> {
         prepared: Option<GameCpuResources>,
     ) -> Result<Self> {
         let root = options.resources.clone();
+        let mods = mods::ModsState::with_content(&settings.mods.enabled, &options.dev_mods);
         let registry = pack.assets.registry;
         // Until a world is opened the streamer is idle.
         let mut streaming = Streaming::new(
@@ -11847,6 +11968,9 @@ impl<'a> Game<'a> {
             lod_covered_at: None,
             options,
             player: None,
+            elevator_input: 0,
+            ore_excavation: Default::default(),
+            ore_intent_sent: false,
             spawn: None,
             clock: FixedStep::default(),
             previous_position: Vec3::ZERO,
@@ -11929,6 +12053,9 @@ impl<'a> Game<'a> {
             particles,
             pickups: Default::default(),
             sign_edit: None,
+            elevator_edit: None,
+            compass_picker: None,
+            compass_authority: Default::default(),
             book: None,
             lectern_pulses: Vec::new(),
             loading_progress: 0.0,
@@ -12077,7 +12204,7 @@ impl<'a> Game<'a> {
             pending_uploads: Vec::new(),
             frame_graph: Default::default(),
             extras: Default::default(),
-            mods: Default::default(),
+            mods,
             sky_darken_memo: Default::default(),
             persist: Default::default(),
             remote: None,
@@ -12909,7 +13036,6 @@ fn start_game<'a>(
     game.apply_settings();
     // Benchmarks measure the game alone.
     if game.options.benchmark.is_none() {
-        game.mods.dev = game.options.dev_mods.clone();
         game.start_mods();
     }
     game.start_agent_control()?;

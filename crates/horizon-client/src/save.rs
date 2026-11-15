@@ -480,6 +480,9 @@ pub fn encode_block_entity(
         ("components", Tag::Compound(components)),
     ];
     match e {
+        BlockEntity::Elevator(e) => {
+            entries.push(("Options", Tag::Byte(e.options.bits() as i8)));
+        }
         BlockEntity::Chest(items) => entries.push(("Items", encode_items(items))),
         BlockEntity::Furnace(f) => {
             entries.push(("Items", encode_items(&f.items)));
@@ -577,6 +580,18 @@ pub fn decode_block_entity(tag: &Tag) -> Option<((i32, i32, i32), crate::contain
     let int = |k: &str| number(tag.get(k)).map(|v| v as i32);
     let id = text(tag.get("id"))?;
     let pos = (int("x")?, int("y")?, int("z")?);
+    if id == "horizon:elevator" {
+        let options = crate::elevator_options::ElevatorOptions::from_bits(
+            u8::try_from(int("Options")?).ok()?,
+        )?;
+        return Some((
+            pos,
+            BlockEntity::Elevator(crate::elevator_options::ElevatorBlock {
+                options,
+                ..Default::default()
+            }),
+        ));
+    }
     if id == "minecraft:jukebox" {
         let record = tag.get("RecordItem").and_then(item_from_nbt);
         let ticks = number(tag.get("ticks_since_song_started")).unwrap_or(0);
@@ -695,7 +710,8 @@ pub fn decode_block_entity(tag: &Tag) -> Option<((i32, i32, i32), crate::contain
             c.state_triggered = None;
             c.crafting_ticks = int("crafting_ticks_remaining").unwrap_or(0);
         }
-        BlockEntity::Jukebox(_)
+        BlockEntity::Elevator(_)
+        | BlockEntity::Jukebox(_)
         | BlockEntity::Beacon(_)
         | BlockEntity::Lectern(_)
         | BlockEntity::Banner(_)

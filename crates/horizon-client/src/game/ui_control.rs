@@ -55,6 +55,16 @@ impl Game<'_> {
     /// of an open inventory or menu (`slot-ID`, the ids of `click-slot`).
     pub(super) fn ui_nodes(&self) -> Vec<Node> {
         let size = self.gui_scale().map(|b| [b.width, b.height]);
+        if self.compass_picker.is_some()
+            && let Some(size) = size
+        {
+            return self.compass_nodes(size);
+        }
+        if self.elevator_edit.is_some()
+            && let Some(size) = size
+        {
+            return self.elevator_nodes(size);
+        }
         let mut nodes = widgets::tree(&widgets::last_labelled(), &widgets::last_targets(), size);
         if matches!(self.screen, Screen::Inventory | Screen::Creative)
             && self.title.is_none()
@@ -83,6 +93,26 @@ impl Game<'_> {
         });
         if let Some(label) = &node.label {
             v["label"] = json!(label);
+        }
+        if node.id == "compass-filter"
+            && let Some(p) = self.compass_picker.as_ref()
+        {
+            v["navigation"] = json!(p.target.as_ref().and_then(|t| {
+                self.eye_position()
+                    .map(|pos| horizon_client::compass::navigation(t, self.dim.id(), pos))
+            }));
+            v["value"] = json!(p.filter);
+            v["status"] = json!(p.status);
+            v["selected"] = json!(p.selected);
+            v["target"] = json!(p.target);
+            v["session"] = json!(p.session);
+        }
+        if let Some(edit) = self.elevator_edit.as_ref() {
+            match node.id.as_str() {
+                "elevator-directional" => v["value"] = json!(edit.options.directional),
+                "elevator-hide-arrow" => v["value"] = json!(edit.options.hide_arrow),
+                _ => {}
+            }
         }
         match node.kind {
             Kind::Slider { value, .. } => v["value"] = json!(value),

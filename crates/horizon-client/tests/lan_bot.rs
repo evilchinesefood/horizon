@@ -591,3 +591,72 @@ fn guests_see_each_other_and_the_world_entities() {
     first.join().unwrap().unwrap();
     drop(second);
 }
+
+#[test]
+fn elevator_input_captures_pre_jump_position_and_keeps_players_independent() {
+    let Some(resources) = resources() else { return };
+    let mut s = server(&resources);
+    let port = s.hub.lan.port;
+    let _first = run(&mut s, move || connect(port, "ElevatorOne", true));
+    let _second = run(&mut s, move || connect(port, "ElevatorTwo", true));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while s.hub.guests.len() < 2 {
+        s.tick(&[]);
+        assert!(Instant::now() < deadline, "guests did not join");
+        thread::yield_now();
+    }
+    for g in &mut s.hub.guests {
+        g.loaded = true;
+        g.awaiting_teleport = None;
+        g.on_ground = true;
+        g.input = 0;
+        g.elevator_activation = None;
+    }
+    let origin = s.hub.guests[0].position;
+    let g = &mut s.hub.guests[0];
+    g.inbox
+        .push_back(S::PlayerInput(play::PlayerInput { flags: 16 }));
+    g.inbox.push_back(S::MovePlayerPos(play::MovePlayerPos {
+        x: origin[0],
+        y: origin[1] + 0.42,
+        z: origin[2],
+        flags: 0,
+    }));
+    g.inbox
+        .push_back(S::PlayerInput(play::PlayerInput { flags: 0 }));
+    s.hub.guests[1]
+        .inbox
+        .push_back(S::PlayerInput(play::PlayerInput { flags: 32 }));
+    s.tick(&[]);
+    let request = s.hub.guests[0]
+        .elevator_activation
+        .take()
+        .expect("short tap survived release");
+    assert_eq!(request.position, origin);
+    assert!(request.grounded);
+    assert_eq!(request.direction, horizon_client::elevator::Direction::Up);
+    assert_eq!(s.hub.guests[0].position[1], origin[1] + 0.42);
+    let second = s.hub.guests[1]
+        .elevator_activation
+        .take()
+        .expect("second player's request");
+    assert_eq!(second.direction, horizon_client::elevator::Direction::Down);
+    s.hub.guests[1]
+        .inbox
+        .push_back(S::PlayerInput(play::PlayerInput { flags: 32 }));
+    s.tick(&[]);
+    assert!(
+        s.hub.guests[1].elevator_activation.is_none(),
+        "holding cannot enqueue another trip"
+    );
+    s.hub.guests[0]
+        .inbox
+        .push_back(S::PlayerInput(play::PlayerInput { flags: 16 }));
+    s.tick(&[]);
+    assert!(s.hub.guests[0].elevator_activation.is_some());
+    s.hub.teleport(0, Some(origin));
+    assert!(
+        s.hub.guests[0].elevator_activation.is_none(),
+        "teleport invalidates old activation"
+    );
+}

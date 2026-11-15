@@ -876,6 +876,7 @@ impl Hub {
         let ticks = self.ticks;
         let g = &mut self.guests[i];
         g.teleport_tick = ticks;
+        g.elevator_activation = None;
         if let Some(p) = position {
             g.position = p;
             g.previous_position = p;
@@ -1290,18 +1291,44 @@ impl Hub {
             .iter()
             .map(|c| self.encoder.body_in(c, world))
             .collect();
+        let mut elevator_entries = vec![Vec::new(); columns.len()];
+        for (&(x, y, z), entity) in world.block_entities.iter() {
+            if let crate::containers::BlockEntity::Elevator(e) = entity
+                && let Some(&j) = index.get(&(x >> 4, z >> 4))
+            {
+                elevator_entries[j].push(([x, y, z], e.options));
+            }
+        }
+        let elevator_bodies: Vec<Option<Vec<u8>>> = columns
+            .iter()
+            .zip(elevator_entries)
+            .map(|(c, entries)| {
+                (!entries.is_empty()).then(|| {
+                    C::CustomPayload(
+                        crate::elevator_options::Message::Chunk {
+                            x: c.x,
+                            z: c.z,
+                            entries,
+                        }
+                        .packet(),
+                    )
+                    .encode()
+                })
+            })
+            .collect();
         for (i, taken, batch) in batches {
             let g = &mut self.guests[i];
             let size = batch.len();
             g.batch_quota -= size as f32;
             g.send(&C::ChunkBatchStart(horizon_protocol::packets::Empty));
-            g.sender.send_many(batch.into_iter().map(|j| {
+            g.sender.send_many(batch.into_iter().flat_map(|j| {
                 uses[j] -= 1;
-                if uses[j] == 0 {
+                let body = if uses[j] == 0 {
                     std::mem::take(&mut bodies[j])
                 } else {
                     bodies[j].clone()
-                }
+                };
+                std::iter::once(body).chain(elevator_bodies[j].clone())
             }));
             g.send(&C::ChunkBatchFinished(play::ChunkBatchFinished {
                 size: size as i32,
@@ -1461,6 +1488,20 @@ impl Hub {
                 let Some(entity) = world.block_entities.get(&(x, y, z)) else {
                     continue;
                 };
+                if let crate::containers::BlockEntity::Elevator(e) = entity {
+                    let body = C::CustomPayload(
+                        crate::elevator_options::Message::State {
+                            pos: [x, y, z],
+                            state: e.options,
+                        }
+                        .packet(),
+                    )
+                    .encode();
+                    for &i in &viewers {
+                        self.guests[i].sender.send(body.clone());
+                    }
+                    continue;
+                }
                 let Some(tag) = super::chunks::entity_tag(entity) else {
                     continue;
                 };
@@ -2004,9 +2045,26 @@ impl Hub {
                     g.center = None;
                 }
                 S::PlayerInput(p) => {
+                    let g = &mut self.guests[i];
+                    if g.elevator_activation.is_none()
+                        && g.awaiting_teleport.is_none()
+                        && g.vehicle.is_none()
+                        && !g.dead
+                        && !g.sleeping
+                        && !g.spectator()
+                        && let Some(direction) = crate::elevator::pressed(g.input, p.flags)
+                    {
+                        g.elevator_activation = Some(crate::elevator::Activation {
+                            direction,
+                            position: g.position,
+                            grounded: g.on_ground,
+                            dimension: g.dimension.clone(),
+                            teleport: g.teleport_counter,
+                            tick: self.ticks,
+                        });
+                    }
                     self.guests[i].input = p.flags;
                     self.guests[i].sneaking = p.flags & 32 != 0;
-                    // handlePlayerInput only records keys and updates crouching.
                     // Sprinting persists after the sprint key is released (or
                     // starts with a double tap); PlayerCommand changes it.
                 }

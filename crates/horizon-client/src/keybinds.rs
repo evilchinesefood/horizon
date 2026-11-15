@@ -9,6 +9,11 @@ use winit::{event::MouseButton, keyboard::KeyCode};
 /// (name, default key, category) in Options.keyMappings order.
 pub const MAPPINGS: &[(&str, &str, &str)] = &[
     ("key.attack", "key.mouse.left", "gameplay"),
+    (
+        "key.oreexcavation.excavate",
+        "key.keyboard.grave.accent",
+        "gameplay",
+    ),
     ("key.use", "key.mouse.right", "gameplay"),
     ("key.forward", "key.keyboard.w", "movement"),
     ("key.left", "key.keyboard.a", "movement"),

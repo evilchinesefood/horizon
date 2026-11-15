@@ -30,8 +30,11 @@ use winit::keyboard::KeyCode;
 /// Per-guest state of the gameplay code that lives outside `Guest`.
 #[derive(Default)]
 pub(super) struct GuestPlay {
+    pub(super) ore_excavation: super::ore_excavation::ActorState,
     /// The sign this guest may write on (`SignBlockEntity.playerWhoMayEdit`).
     pub(super) sign_editing: Option<[i32; 3]>,
+    pub(super) elevator_edit: Option<super::elevator_options::Editor>,
+    pub(super) compass: super::compass::Authority,
     mining: Option<Mining>,
     destroy_delay: u32,
     using: Option<(usize, u32)>,
@@ -98,6 +101,7 @@ pub(super) struct GuestCommand {
 /// The game's own state while a guest's is swapped in (`enter_guest`), and
 /// the guest's records that live outside `Guest`.
 pub(super) struct GuestSwap {
+    ore_excavation: super::ore_excavation::ActorState,
     conn: u32,
     i: usize,
     play: GuestPlay,
@@ -113,6 +117,7 @@ pub(super) struct GuestSwap {
     host_keys: std::collections::HashSet<KeyCode>,
     screen: Screen,
     host_sign: Option<super::sign_edit::SignEditor>,
+    host_elevator: Option<super::elevator_options::Editor>,
     host_book: Option<super::books::BookScreen>,
     host_command_block: Option<super::command_blocks::CommandBlockScreen>,
     host_mount_menu: super::mount_menu::MountMenu,
@@ -252,6 +257,7 @@ impl Game<'_> {
         if fresh {
             // A new body (joined, respawned, changed level): nothing on it yet.
             play.equipped = None;
+            play.ore_excavation = Default::default();
         }
         let g = &mut host.hub.guests[i];
         // The guest's body.
@@ -314,6 +320,7 @@ impl Game<'_> {
         // world (#687). The guest's client opens its own.
         let screen = std::mem::replace(&mut self.screen, Screen::Playing);
         let host_sign = self.sign_edit.take();
+        let host_elevator = self.elevator_edit.take();
         let host_book = self.book.take();
         let host_command_block = self.command_block_screen.take();
         let host_mount_menu = std::mem::take(&mut self.mount_menu);
@@ -323,6 +330,10 @@ impl Game<'_> {
         let craft_table = self.craft_table.take();
         let craft_grid = std::mem::replace(&mut self.craft_grid, vec![None; 9]);
         let container = self.container.take();
+        let ore_excavation = std::mem::replace(
+            &mut self.ore_excavation,
+            std::mem::take(&mut play.ore_excavation),
+        );
         let mining = std::mem::replace(&mut self.mining, play.mining.take());
         let destroy_delay = std::mem::replace(&mut self.destroy_delay, play.destroy_delay);
         let using = std::mem::replace(&mut self.using, play.using.take());
@@ -386,6 +397,7 @@ impl Game<'_> {
         }
         self.update_totem_ready();
         Some(GuestSwap {
+            ore_excavation,
             conn,
             i,
             play,
@@ -400,6 +412,7 @@ impl Game<'_> {
             host_keys,
             screen,
             host_sign,
+            host_elevator,
             host_book,
             host_command_block,
             host_mount_menu,
@@ -443,6 +456,7 @@ impl Game<'_> {
         // A totem that saved the guest this turn (its hurt set it off).
         let totem = self.apply_totem();
         let GuestSwap {
+            ore_excavation,
             conn,
             i,
             mut play,
@@ -457,6 +471,7 @@ impl Game<'_> {
             host_keys,
             screen,
             host_sign,
+            host_elevator,
             host_book,
             host_command_block,
             host_mount_menu,
@@ -532,6 +547,7 @@ impl Game<'_> {
         let guest_vehicle = std::mem::replace(&mut self.riding, riding);
         self.left = left;
         self.right = right;
+        play.ore_excavation = std::mem::replace(&mut self.ore_excavation, ore_excavation);
         play.mining = std::mem::replace(&mut self.mining, mining);
         play.destroy_delay = std::mem::replace(&mut self.destroy_delay, destroy_delay);
         play.using = std::mem::replace(&mut self.using, using);
@@ -545,6 +561,7 @@ impl Game<'_> {
         self.screen = screen;
         // A sign the guest's placement opened (SignBlock.openTextEdit).
         let guest_sign = std::mem::replace(&mut self.sign_edit, host_sign);
+        let guest_elevator = std::mem::replace(&mut self.elevator_edit, host_elevator);
         // A lectern the guest's use opened (LecternBlock.openScreen).
         let guest_lectern = match std::mem::replace(&mut self.book, host_book) {
             Some(super::books::BookScreen::View {
@@ -688,6 +705,9 @@ impl Game<'_> {
         }
         if let Some(station) = opened_station {
             self.lan_station_opened(host, conn, station);
+        }
+        if let Some(edit) = guest_elevator {
+            self.lan_open_elevator_editor(host, conn, edit);
         }
         if let Some(edit) = guest_sign {
             self.lan_open_sign_editor(host, conn, edit);
@@ -1105,6 +1125,15 @@ impl Game<'_> {
                 self.lan_station_button(host, conn, p.container, p.button);
             }
             S::RenameItem(p) => self.lan_station_rename(host, conn, &p.name),
+            S::CustomPayload(p) if p.channel == horizon_client::compass::CHANNEL => {
+                self.lan_compass_message(host, conn, &p.data)
+            }
+            S::CustomPayload(p) if p.channel == horizon_client::ore_excavation::CHANNEL => {
+                self.lan_ore_message(host, conn, &p.data);
+            }
+            S::CustomPayload(p) if p.channel == horizon_client::elevator_options::CHANNEL => {
+                self.lan_elevator_message(host, conn, &p.data)
+            }
             S::SignUpdate(p) => self.lan_sign_update(host, conn, p),
             S::EditBook(p) => self.lan_edit_book(host, conn, p),
             S::ContainerSlotStateChanged(p) => {
@@ -1771,8 +1800,11 @@ impl Game<'_> {
             let Some(gi) = host.hub.guests.iter().position(|g| g.conn == conn) else {
                 continue;
             };
+            self.tick_guest_elevator_editor(host, conn);
+            self.tick_guest_compass(host, conn);
             self.guest_sleep_tick(host, gi);
             if host.hub.guests[gi].dead {
+                host.play.entry(conn).or_default().ore_excavation = Default::default();
                 self.guest_tick_death(host, gi);
                 continue;
             }
@@ -1835,6 +1867,12 @@ impl Game<'_> {
                 play.attack_item = held;
             }
             self.guest_delayed_destroy(host, conn);
+            self.as_guest(host, conn, |g| {
+                if let Err(error) = g.ore_tick() {
+                    log::warn!("ore excavation: {error}");
+                }
+            });
+            self.guest_elevator(host, conn);
             self.guest_server_tick(host, conn);
             // Player.tick's statistics and ServerPlayer.tick's triggers, then
             // PlayerAdvancements.flushDirty.
